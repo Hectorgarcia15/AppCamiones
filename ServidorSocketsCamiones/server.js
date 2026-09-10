@@ -418,7 +418,7 @@ const ultimaVelocidadConocida = new Map();
 async function actualizarYNotificar(imei, latitud, longitud, velocidad) {
     try {
         const resultadoCamion = await pool.query(
-            'UPDATE camiones SET latitud = $1, longitud = $2, velocidad = $3 WHERE imei = $4 RETURNING owner_id, ficha',
+            'UPDATE camiones SET latitud = $1, longitud = $2, velocidad = $3, ultima_actualizacion = NOW() WHERE imei = $4 RETURNING owner_id, ficha, ultima_actualizacion',
             [latitud, longitud, velocidad, imei]
         );
 
@@ -429,8 +429,8 @@ async function actualizarYNotificar(imei, latitud, longitud, velocidad) {
         );
 
         if (resultadoCamion.rows.length > 0) {
-            const { owner_id: ownerId, ficha } = resultadoCamion.rows[0];
-            io.to(ownerId).emit(`camion_${imei}`, { imei, latitud, longitud, velocidad });
+            const { owner_id: ownerId, ficha, ultima_actualizacion: ultimaActualizacion } = resultadoCamion.rows[0];
+            io.to(ownerId).emit(`camion_${imei}`, { imei, latitud, longitud, velocidad, ultima_actualizacion: ultimaActualizacion });
             console.log(`💾 Ubicación actualizada y enviada a la sala de "${ownerId}"`);
 
             const velocidadAnterior = ultimaVelocidadConocida.get(imei) ?? 0;

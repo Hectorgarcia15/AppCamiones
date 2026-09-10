@@ -23,6 +23,7 @@ export interface Camion {
   longitud: number;
   velocidad: number;
   fecha_vencimiento_seguro: string | null;
+  ultima_actualizacion: string | null;
 }
 
 export interface User {

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -19,11 +19,42 @@ const colorEstado = (estado: string) =>
   estado === "En Ruta" ? "#22c55e" :
   estado === "Mantenimiento" ? "#ef4444" : "#eab308";
 
+const formatearVelocidad = (velocidad: number | null | undefined) => {
+  const valor = typeof velocidad === "number" && !Number.isNaN(velocidad) ? velocidad : 0;
+  return `${Math.round(valor)} km/h`;
+};
+
+const formatearUltimaSenal = (fechaIso: string | null | undefined) => {
+  if (!fechaIso) return "Sin señal";
+  const fecha = new Date(fechaIso).getTime();
+  if (Number.isNaN(fecha)) return "Sin señal";
+
+  const segundos = Math.floor((Date.now() - fecha) / 1000);
+  if (segundos < 60) return "Hace instantes";
+
+  const minutos = Math.floor(segundos / 60);
+  if (minutos < 60) return `Hace ${minutos} min`;
+
+  const horas = Math.floor(minutos / 60);
+  if (horas < 24) return `Hace ${horas} h`;
+
+  const dias = Math.floor(horas / 24);
+  return `Hace ${dias} d`;
+};
+
 export default function DashboardScreen() {
   const navigation = useNavigation<any>();
   const { user, trucks, refreshTrucks } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
   const [busqueda, setBusqueda] = useState("");
+  // Fuerza un re-render cada 30s para que "Hace X min" se mantenga al dia
+  // sin depender de que llegue un nuevo dato del GPS.
+  const [, forzarActualizacionReloj] = useState(0);
+
+  useEffect(() => {
+    const intervalo = setInterval(() => forzarActualizacionReloj((t) => t + 1), 30000);
+    return () => clearInterval(intervalo);
+  }, []);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -112,19 +143,32 @@ export default function DashboardScreen() {
       renderItem={({ item: camion }) => (
         <TouchableOpacity style={styles.truckCard} onPress={() => irAMapa(camion)}>
           <View style={styles.truckAccentBar} />
-          <View style={styles.truckInfoLeft}>
-            <Text style={styles.truckIcon}>🚚</Text>
-            <View style={styles.textContainer}>
-              <Text style={styles.truckNameText}>Ficha {camion.ficha}</Text>
-              <Text style={styles.truckDetailText} numberOfLines={1}>{camion.marca} {camion.modelo}</Text>
+          <View style={styles.truckTopRow}>
+            <View style={styles.truckInfoLeft}>
+              <Text style={styles.truckIcon}>🚚</Text>
+              <View style={styles.textContainer}>
+                <Text style={styles.truckNameText}>Ficha {camion.ficha}</Text>
+                <Text style={styles.truckDetailText} numberOfLines={1}>{camion.marca} {camion.modelo}</Text>
+              </View>
+            </View>
+
+            <View style={styles.truckStatusRight}>
+              <View style={[styles.statusDot, { backgroundColor: colorEstado(camion.estado) }]} />
+              <Text style={[styles.verMapaText, { color: colorEstado(camion.estado) }]} numberOfLines={1}>
+                {camion.estado || "Ver mapa"}
+              </Text>
             </View>
           </View>
 
-          <View style={styles.truckStatusRight}>
-            <View style={[styles.statusDot, { backgroundColor: colorEstado(camion.estado) }]} />
-            <Text style={[styles.verMapaText, { color: colorEstado(camion.estado) }]} numberOfLines={1}>
-              {camion.estado || "Ver mapa"}
-            </Text>
+          <View style={styles.truckMetaRow}>
+            <View style={styles.truckMetaItem}>
+              <Text style={styles.truckMetaIcon}>⚡</Text>
+              <Text style={styles.truckMetaText}>{formatearVelocidad(camion.velocidad)}</Text>
+            </View>
+            <View style={styles.truckMetaItem}>
+              <Text style={styles.truckMetaIcon}>🕐</Text>
+              <Text style={styles.truckMetaText}>{formatearUltimaSenal(camion.ultima_actualizacion)}</Text>
+            </View>
           </View>
         </TouchableOpacity>
       )}
@@ -229,9 +273,6 @@ const styles = StyleSheet.create({
   },
   truckCard: {
     backgroundColor: "#111111",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
     padding: 14,
     borderRadius: 14,
     marginBottom: 10,
@@ -247,6 +288,11 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: 4,
     backgroundColor: YELLOW,
+  },
+  truckTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
   },
   truckInfoLeft: {
     flexDirection: "row",
@@ -292,6 +338,28 @@ const styles = StyleSheet.create({
   verMapaText: {
     fontSize: 12,
     fontWeight: "bold",
+  },
+  truckMetaRow: {
+    flexDirection: "row",
+    marginTop: 10,
+    paddingTop: 10,
+    marginLeft: 6,
+    borderTopWidth: 1,
+    borderTopColor: "#2a2a2a",
+  },
+  truckMetaItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginRight: 20,
+  },
+  truckMetaIcon: {
+    fontSize: 14,
+    marginRight: 5,
+  },
+  truckMetaText: {
+    color: "#c9c9c9",
+    fontSize: 13,
+    fontWeight: "600",
   },
   noTrucksText: {
     color: "#94a3b8",
