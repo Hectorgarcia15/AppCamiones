@@ -1,6 +1,6 @@
 -- Kilometraje acumulado automaticamente por GPS (Haversine) + aviso de cambio de aceite.
 -- Ejecutar una sola vez en la base de datos de produccion:
---   PGPASSWORD='Hector1557' psql -h localhost -U postgres -d fleet_system -f migracion_kilometraje.sql
+--   PGPASSWORD="$DB_PASSWORD" psql -h localhost -U postgres -d fleet_system -f migracion_kilometraje.sql
 
 -- "kilometraje" era texto libre para mostrar tal cual (ej. "50,000 km").
 -- De aca en adelante es el total acumulado que el servidor va sumando solo
