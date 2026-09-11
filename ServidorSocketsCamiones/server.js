@@ -242,6 +242,7 @@ function tituloPorTipoAlerta(tipo) {
         case 'encendido': return '🔧 Motor encendido';
         case 'apagado': return '🔧 Motor apagado';
         case 'desbloqueo': return '🔓 Vehículo reactivado';
+        case 'aceite': return '🛢️ Cambio de aceite';
         default: return '🚨 Alerta de flota';
     }
 }
@@ -415,11 +416,61 @@ const VELOCIDAD_MAX_PERMITIDA = 80;
 // el umbral (no en cada paquete mientras se mantiene arriba de 80).
 const ultimaVelocidadConocida = new Map();
 
+// El GPS no tiene odometro: el kilometraje se calcula solo, sumando la
+// distancia (Haversine) entre cada par de coordenadas consecutivas que
+// llegan, sobre el total acumulado que ya traia el camion. Dos guardas para
+// que el ruido/errores del GPS no infecten ese total:
+//  - KM_TRAMO_MIN_METROS: por debajo de esto es "flotacion" normal del GPS
+//    con el camion detenido, no movimiento real.
+//  - KM_TRAMO_MAX_KM: por encima de esto es un salto de coordenada
+//    imposible al ritmo normal de reporte (glitch de hardware), se descarta.
+const KM_TRAMO_MIN_METROS = 15;
+const KM_TRAMO_MAX_KM = 5;
+// Umbral de aviso de cambio de aceite. Igual que con la velocidad, se
+// guarda el ultimo valor conocido por IMEI para disparar la alerta solo al
+// CRUZAR el umbral, no en cada paquete mientras se mantiene por debajo.
+const KM_AVISO_CAMBIO_ACEITE = 300;
+const ultimoKmFaltantesConocido = new Map();
+
+function distanciaHaversineKm(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos((lat1 * Math.PI) / 180) *
+            Math.cos((lat2 * Math.PI) / 180) *
+            Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+}
+
 async function actualizarYNotificar(imei, latitud, longitud, velocidad) {
     try {
+        const anterior = await pool.query(
+            'SELECT latitud, longitud FROM camiones WHERE imei = $1',
+            [imei]
+        );
+
+        let deltaKm = 0;
+        if (anterior.rows.length > 0) {
+            const { latitud: latAnterior, longitud: lonAnterior } = anterior.rows[0];
+            if (latAnterior != null && lonAnterior != null && !(latAnterior === 0 && lonAnterior === 0)) {
+                const tramoKm = distanciaHaversineKm(latAnterior, lonAnterior, latitud, longitud);
+                if (tramoKm * 1000 >= KM_TRAMO_MIN_METROS && tramoKm <= KM_TRAMO_MAX_KM) {
+                    deltaKm = tramoKm;
+                } else if (tramoKm > KM_TRAMO_MAX_KM) {
+                    console.log(`⚠️ Salto GPS descartado para IMEI ${imei}: ${tramoKm.toFixed(2)} km entre dos paquetes consecutivos`);
+                }
+            }
+        }
+
         const resultadoCamion = await pool.query(
-            'UPDATE camiones SET latitud = $1, longitud = $2, velocidad = $3, ultima_actualizacion = NOW() WHERE imei = $4 RETURNING owner_id, ficha, ultima_actualizacion',
-            [latitud, longitud, velocidad, imei]
+            `UPDATE camiones
+             SET latitud = $1, longitud = $2, velocidad = $3, ultima_actualizacion = NOW(), kilometraje = kilometraje + $4
+             WHERE imei = $5
+             RETURNING owner_id, ficha, ultima_actualizacion, kilometraje, kilometraje_ultimo_cambio, intervalo_cambio_aceite`,
+            [latitud, longitud, velocidad, deltaKm, imei]
         );
 
         await pool.query(
@@ -429,7 +480,14 @@ async function actualizarYNotificar(imei, latitud, longitud, velocidad) {
         );
 
         if (resultadoCamion.rows.length > 0) {
-            const { owner_id: ownerId, ficha, ultima_actualizacion: ultimaActualizacion } = resultadoCamion.rows[0];
+            const {
+                owner_id: ownerId,
+                ficha,
+                ultima_actualizacion: ultimaActualizacion,
+                kilometraje,
+                kilometraje_ultimo_cambio: kilometrajeUltimoCambio,
+                intervalo_cambio_aceite: intervaloCambioAceite,
+            } = resultadoCamion.rows[0];
             io.to(ownerId).emit(`camion_${imei}`, { imei, latitud, longitud, velocidad, ultima_actualizacion: ultimaActualizacion });
             console.log(`💾 Ubicación actualizada y enviada a la sala de "${ownerId}"`);
 
@@ -442,6 +500,27 @@ async function actualizarYNotificar(imei, latitud, longitud, velocidad) {
                     'velocidad',
                     `Unidad ${ficha} circula a ${velocidad} kph y supera los ${VELOCIDAD_MAX_PERMITIDA} kph.`,
                     { velocidad, latitud, longitud }
+                );
+            }
+
+            const kmFaltantes = Math.round(Number(kilometrajeUltimoCambio) + Number(intervaloCambioAceite) - Number(kilometraje));
+            const kmFaltantesAnterior = ultimoKmFaltantesConocido.get(imei) ?? Infinity;
+            ultimoKmFaltantesConocido.set(imei, kmFaltantes);
+            if (kmFaltantesAnterior > 0 && kmFaltantes <= 0) {
+                await dispararAlerta(
+                    ownerId,
+                    imei,
+                    'aceite',
+                    `¡MANTENIMIENTO CRÍTICO! Unidad ${ficha} debe cambiar aceite YA (superó el intervalo por ${Math.abs(kmFaltantes)} km).`,
+                    { kmFaltantes }
+                );
+            } else if (kmFaltantesAnterior > KM_AVISO_CAMBIO_ACEITE && kmFaltantes <= KM_AVISO_CAMBIO_ACEITE) {
+                await dispararAlerta(
+                    ownerId,
+                    imei,
+                    'aceite',
+                    `Aviso: faltan ${kmFaltantes} km para el cambio de aceite de la unidad ${ficha}.`,
+                    { kmFaltantes }
                 );
             }
         } else {

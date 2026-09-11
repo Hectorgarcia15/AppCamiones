@@ -42,7 +42,7 @@ export default function TruckDetailScreen() {
       <View style={styles.sectionCard}>
         <Text style={styles.sectionTitle}>Status Operativo</Text>
         <Text style={styles.infoText}>📍 Estado: <Text style={styles.boldText}>{camion.estado}</Text></Text>
-        <Text style={styles.infoText}>📊 Kilometraje: {camion.kilometraje}</Text>
+        <Text style={styles.infoText}>📊 Kilometraje: {Math.round(Number(camion.kilometraje)).toLocaleString('es-DO')} km</Text>
       </View>
 
       {/* Tarjeta de Especificaciones de Mecánica Pesada */}

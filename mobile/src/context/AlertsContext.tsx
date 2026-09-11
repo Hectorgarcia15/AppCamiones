@@ -23,6 +23,7 @@ const TIPO_SERVIDOR_A_ALERTA: Record<string, TipoAlerta> = {
   encendido: 'ignicion',
   apagado: 'apagado',
   desbloqueo: 'desbloqueo',
+  aceite: 'aceite',
 };
 
 // Intensidad del sonido y patron de repeticion por tipo de alerta, segun el

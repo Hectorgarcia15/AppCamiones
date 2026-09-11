@@ -25,7 +25,7 @@ export default function TrucksScreen() {
         </View>
 
         <Text style={styles.modeloText}>{item.modelo} ({item.año})</Text>
-        <Text style={styles.kmText}>📊 Kilometraje: {item.kilometraje}</Text>
+        <Text style={styles.kmText}>📊 Kilometraje: {Math.round(Number(item.kilometraje)).toLocaleString('es-DO')} km</Text>
 
         <View style={styles.buttonRow}>
           <TouchableOpacity
