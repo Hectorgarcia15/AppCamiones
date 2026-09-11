@@ -55,7 +55,7 @@ Solo si el comparador señaló un bit o byte distinto al que ya está en `server
 - [ ] 3. Commit + push a `origin/main` con el ajuste.
 - [ ] 4. En el droplet: `git pull` dentro de `ServidorSocketsCamiones/`, luego `pm2 restart <nombre>`.
 - [ ] 5. Opcional para no esperar 10 min por prueba: bajar temporalmente
-      `RECORDATORIO_MOTOR_INTERVALO_MS` a algo como 30 segundos (recuerda revertirlo en la Parte F).
+      `RECORDATORIO_MOTOR_INTERVALO_MS` a algo como 30 segundos (recuerda revertirlo en la Parte G).
 
 ## Parte C — Encendido / apagado / recordatorio
 
@@ -121,7 +121,50 @@ ningún corte sorpresa.
 - [ ] 5. Apagar y encender con la llave 3-4 veces seguidas — debe funcionar todas las
       veces, sin que el servidor vuelva a cortar el motor por su cuenta.
 
-## Parte F — Cierre
+## Parte F — Kilometraje automático (GPS) y alerta de cambio de aceite
+
+Verificar que el kilometraje se acumule solo con el GPS real, que las guardas contra ruido
+(`KM_TRAMO_MIN_METROS = 15`, `KM_TRAMO_MAX_KM = 5` en `server.js`) no lo arruinen, y que la
+alerta de aceite se dispare bien. Requiere que la migración `migracion_kilometraje.sql` ya
+haya corrido en el droplet.
+
+- [ ] 1. Antes de arrancar, anotar el kilometraje actual del camión en la app (TrucksScreen
+      o TruckDetailScreen).
+- [ ] 2. Recorrer un tramo de distancia conocida (ideal 2-3 km o más, medido en un mapa, para
+      que el error relativo sea chico).
+- [ ] 3. Al terminar, comparar el kilometraje nuevo en la app contra el inicial: la diferencia
+      debería acercarse a la distancia real recorrida (Haversine mide línea recta entre
+      puntos consecutivos, no la curva exacta de la ruta — un margen de unos pocos % es
+      normal, no un error).
+- [ ] 4. En el log del servidor (`pm2 logs <nombre>`) durante el tramo, confirmar que NO
+      aparece `⚠️ Salto GPS descartado` (si aparece, hay coordenadas erráticas en ese punto,
+      revisar señal/hardware ahí).
+- [ ] 5. Guarda de reposo (<15m): dejar el camión detenido varios minutos con el GPS
+      reportando y confirmar que el kilometraje en la app NO sube mientras está parado (a lo
+      sumo un par de metros de flotación normal, nunca kilómetros).
+- [ ] 6. Guarda de salto (>5km): no hay forma segura de simularlo en campo. Si en el uso
+      normal llega a aparecer `⚠️ Salto GPS descartado` en el log, anotar IMEI y hora para
+      revisar después si el umbral de 5 km sigue siendo el correcto.
+- [ ] 7. Carga inicial: correr en el droplet `DB_PASSWORD=... node registrarKilometrajeInicial.js
+      <IMEI> <KM_INICIAL>` y confirmar que el número en la app cambia al valor puesto.
+- [ ] 8. Para forzar la alerta sin esperar miles de km: correr
+      `DB_PASSWORD=... node registrarKilometrajeInicial.js <IMEI> <KM> <INTERVALO_CHICO>`
+      (ej. intervalo de 1 km) para que el kilometraje quede a menos de 300 km del próximo
+      cambio, o directamente por encima.
+- [ ] 9. Mover el camión (o esperar el próximo paquete GPS) y confirmar en el log:
+      ```
+      🔔 Alerta "aceite" para IMEI ...
+      ```
+- [ ] 10. Confirmar en el celular: sonido normal una sola vez, y push "🛢️ Cambio de aceite"
+      con el mensaje de aviso (`Faltan X km...`) o el crítico (`¡MANTENIMIENTO CRÍTICO!...`)
+      según corresponda.
+- [ ] 11. Correr `DB_PASSWORD=... node registrarCambioAceite.js <IMEI>` y confirmar que el
+      "próximo cambio" calculado sube correctamente, y que la alerta deja de dispararse en
+      los siguientes paquetes GPS.
+- [ ] 12. Revertir cualquier valor de prueba (ej. el intervalo chico del paso 8) antes de
+      dejar el camión en uso normal.
+
+## Parte G — Cierre
 
 Dejar todo en el estado correcto para producción, y anotar lo que confirmaste.
 
