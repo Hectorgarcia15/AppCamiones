@@ -36,7 +36,7 @@ export default function TruckDetailScreen() {
       </TouchableOpacity>
 
       <Text style={styles.header}>{camion.marca} {camion.modelo}</Text>
-      <Text style={styles.subHeader}>Ficha: {camion.ficha} | Año: {camion.año}</Text>
+      <Text style={styles.subHeader}>Ficha: {camion.ficha} | Año: {camion.ano}</Text>
 
       {/* Tarjeta de Estado Actual */}
       <View style={styles.sectionCard}>
