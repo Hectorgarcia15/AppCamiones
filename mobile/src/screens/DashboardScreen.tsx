@@ -14,6 +14,7 @@ import { useNavigation } from "@react-navigation/native";
 import { useAuth, Camion } from "../context/AuthContext";
 
 const YELLOW = "#FFD500";
+const GREEN = "#00FF00";
 
 const colorEstado = (estado: string) =>
   estado === "En Ruta" ? "#22c55e" :
@@ -254,12 +255,11 @@ const styles = StyleSheet.create({
   instructionText: {
     fontSize: 11,
     fontWeight: "bold",
-    color: YELLOW,
+    color: GREEN,
     textAlign: "center",
     marginBottom: 16,
     marginTop: 12,
     letterSpacing: 0.5,
-    opacity: 0.85,
   },
   searchInput: {
     backgroundColor: "#111111",
@@ -309,7 +309,7 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
   truckNameText: {
-    color: YELLOW,
+    color: GREEN,
     fontSize: 15,
     fontWeight: "bold",
   },
