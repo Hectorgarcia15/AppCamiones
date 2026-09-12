@@ -1,8 +1,7 @@
 ﻿import React from "react";
 import { View, Text, StyleSheet, FlatList, TouchableOpacity } from "react-native";
 import { useNavigation } from "@react-navigation/native";
-import { useAuth } from "../context/AuthContext";
-import { Camion } from "../utils/routeAlertUtils";
+import { useAuth, Camion } from "../context/AuthContext";
 
 export default function TrucksScreen() {
   const navigation = useNavigation<any>();
@@ -56,7 +55,7 @@ export default function TrucksScreen() {
       </View>
       <FlatList
         data={trucks}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item) => String(item.id)}
         renderItem={renderCamion}
         contentContainerStyle={{ paddingBottom: 40 }}
       />
