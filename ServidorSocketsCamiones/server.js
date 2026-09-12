@@ -243,6 +243,7 @@ function tituloPorTipoAlerta(tipo) {
         case 'apagado': return '🔧 Motor apagado';
         case 'desbloqueo': return '🔓 Vehículo reactivado';
         case 'aceite': return '🛢️ Cambio de aceite';
+        case 'seguro': return '📄 Seguro por vencer';
         default: return '🚨 Alerta de flota';
     }
 }
@@ -407,6 +408,51 @@ async function limpiarAlertasViejas() {
         }
     } catch (error) {
         console.log(`❌ Error limpiando historial de alertas: ${error.message}`);
+    }
+}
+
+// ==================== ALERTA DE VENCIMIENTO DE SEGURO (revisa 1 vez al dia) ====================
+// "seguro_alerta_enviada_fecha" guarda para que fecha_vencimiento_seguro
+// especifica ya se aviso, para no repetir la misma alerta cada dia durante
+// la ventana de 3 dias. Si el dueño renueva el seguro (la fecha cambia),
+// esta columna deja de coincidir y el aviso vuelve a poder dispararse para
+// el proximo vencimiento, sin tocar nada a mano.
+async function revisarVencimientosSeguro() {
+    try {
+        const resultado = await pool.query(
+            `SELECT owner_id, imei, ficha, marca, modelo, fecha_vencimiento_seguro
+             FROM camiones
+             WHERE fecha_vencimiento_seguro IS NOT NULL
+               AND fecha_vencimiento_seguro <= CURRENT_DATE + 3
+               AND (seguro_alerta_enviada_fecha IS NULL OR seguro_alerta_enviada_fecha <> fecha_vencimiento_seguro)`
+        );
+
+        for (const fila of resultado.rows) {
+            const {
+                owner_id: ownerId,
+                imei,
+                ficha,
+                marca,
+                modelo,
+                fecha_vencimiento_seguro: fechaVencimiento,
+            } = fila;
+
+            const hoyUTC = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
+            const vencimientoUTC = Date.UTC(fechaVencimiento.getUTCFullYear(), fechaVencimiento.getUTCMonth(), fechaVencimiento.getUTCDate());
+            const diasRestantes = Math.round((vencimientoUTC - hoyUTC) / (24 * 60 * 60 * 1000));
+            const fechaFormateada = `${String(fechaVencimiento.getUTCDate()).padStart(2, '0')}/${String(fechaVencimiento.getUTCMonth() + 1).padStart(2, '0')}/${fechaVencimiento.getUTCFullYear()}`;
+
+            const mensaje = `El seguro del vehículo ${marca} ${modelo}, ficha ${ficha}, se vence en ${diasRestantes} día${diasRestantes === 1 ? '' : 's'}, el ${fechaFormateada}.`;
+
+            await dispararAlerta(ownerId, imei, 'seguro', mensaje, {});
+
+            await pool.query(
+                'UPDATE camiones SET seguro_alerta_enviada_fecha = fecha_vencimiento_seguro WHERE imei = $1',
+                [imei]
+            );
+        }
+    } catch (error) {
+        console.log(`❌ Error revisando vencimientos de seguro: ${error.message}`);
     }
 }
 
@@ -765,3 +811,6 @@ server.listen(3000, () => {
 
 limpiarAlertasViejas();
 setInterval(limpiarAlertasViejas, RETENCION_ALERTAS_INTERVALO_MS);
+
+revisarVencimientosSeguro();
+setInterval(revisarVencimientosSeguro, RETENCION_ALERTAS_INTERVALO_MS);
