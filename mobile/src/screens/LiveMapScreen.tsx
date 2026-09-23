@@ -354,7 +354,7 @@ const styles = StyleSheet.create({
         fontSize: 15,
     },
     imeiText: {
-        color: '#64748b',
+        color: '#cbd5e1',
         fontSize: 12,
     },
 });
