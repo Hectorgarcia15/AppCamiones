@@ -821,8 +821,12 @@ const tcpServerHQ = net.createServer((socket) => {
                 console.log(`\n⚡ [HQ] Camión IMEI: ${datosCamion.imei}`);
                 await actualizarYNotificar(datosCamion.imei, datosCamion.latitud, datosCamion.longitud, datosCamion.velocidad);
             } else if (datosCamion.tipo === 'heartbeat') {
-                // Sin ubicacion: solo lo registramos, no tocamos la BD ni avisamos a la app
+                // Sin ubicacion: no tocamos la BD ni avisamos a la app. Le devolvemos
+                // el mismo heartbeat como ACK (formato no confirmado con el fabricante).
                 console.log(`💓 [HQ] Heartbeat de IMEI ${datosCamion.imei}`);
+                const ack = `*HQ,${datosCamion.imei},HTBT#`;
+                socket.write(ack);
+                console.log(`↩️ [HQ] ACK enviado a IMEI ${datosCamion.imei}: ${ack}`);
             } else if (datosCamion.tipo === 'sin_senal') {
                 console.log(`📡 [HQ] ${datosCamion.tipoMensaje} sin señal GPS (V) de IMEI ${datosCamion.imei}`);
             } else {
