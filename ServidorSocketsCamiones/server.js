@@ -58,6 +58,37 @@ app.get('/api/mis-camiones', verificarToken, async (req, res) => {
     }
 });
 
+// Estado de mantenimiento (aceite) y seguro de un camion, calculado en el
+// momento con las mismas funciones que usan las alertas automaticas.
+app.get('/api/camion/:imei/estado-mantenimiento', verificarToken, async (req, res) => {
+    try {
+        const resultado = await pool.query(
+            `SELECT owner_id, kilometraje, kilometraje_ultimo_cambio, intervalo_cambio_aceite, fecha_vencimiento_seguro
+             FROM camiones WHERE imei = $1`,
+            [req.params.imei]
+        );
+        if (resultado.rows.length === 0) {
+            return res.status(404).json({ error: 'Camion no encontrado' });
+        }
+
+        const fila = resultado.rows[0];
+        if (fila.owner_id !== req.dueno.owner_id) {
+            return res.status(403).json({ error: 'Este vehículo no te pertenece' });
+        }
+
+        const fechaSeguro = fila.fecha_vencimiento_seguro;
+        res.json({
+            kilometraje: Math.round(Number(fila.kilometraje)),
+            proximoCambioKm: Math.round(Number(fila.kilometraje_ultimo_cambio) + Number(fila.intervalo_cambio_aceite)),
+            kmFaltantesAceite: calcularKmFaltantesAceite(fila.kilometraje, fila.kilometraje_ultimo_cambio, fila.intervalo_cambio_aceite),
+            diasParaVencerSeguro: fechaSeguro ? calcularDiasParaVencer(fechaSeguro) : null,
+            fechaVencimientoSeguro: fechaSeguro ? formatearFechaDDMMYYYY(fechaSeguro) : null,
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Error obteniendo el estado de mantenimiento' });
+    }
+});
+
 // Guarda (o refresca) el push token de Expo del dispositivo del dueño que
 // llama, para poder mandarle notificaciones con la app cerrada.
 app.post('/api/registrar-push-token', verificarToken, async (req, res) => {
@@ -417,6 +448,18 @@ async function limpiarAlertasViejas() {
 // la ventana de 3 dias. Si el dueño renueva el seguro (la fecha cambia),
 // esta columna deja de coincidir y el aviso vuelve a poder dispararse para
 // el proximo vencimiento, sin tocar nada a mano.
+// Dias entre hoy y la fecha de vencimiento, contados en UTC (negativo = ya vencio)
+function calcularDiasParaVencer(fechaVencimiento) {
+    const hoy = new Date();
+    const hoyUTC = Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate());
+    const vencimientoUTC = Date.UTC(fechaVencimiento.getUTCFullYear(), fechaVencimiento.getUTCMonth(), fechaVencimiento.getUTCDate());
+    return Math.round((vencimientoUTC - hoyUTC) / (24 * 60 * 60 * 1000));
+}
+
+function formatearFechaDDMMYYYY(fecha) {
+    return `${String(fecha.getUTCDate()).padStart(2, '0')}/${String(fecha.getUTCMonth() + 1).padStart(2, '0')}/${fecha.getUTCFullYear()}`;
+}
+
 async function revisarVencimientosSeguro() {
     try {
         const resultado = await pool.query(
@@ -437,10 +480,8 @@ async function revisarVencimientosSeguro() {
                 fecha_vencimiento_seguro: fechaVencimiento,
             } = fila;
 
-            const hoyUTC = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
-            const vencimientoUTC = Date.UTC(fechaVencimiento.getUTCFullYear(), fechaVencimiento.getUTCMonth(), fechaVencimiento.getUTCDate());
-            const diasRestantes = Math.round((vencimientoUTC - hoyUTC) / (24 * 60 * 60 * 1000));
-            const fechaFormateada = `${String(fechaVencimiento.getUTCDate()).padStart(2, '0')}/${String(fechaVencimiento.getUTCMonth() + 1).padStart(2, '0')}/${fechaVencimiento.getUTCFullYear()}`;
+            const diasRestantes = calcularDiasParaVencer(fechaVencimiento);
+            const fechaFormateada = formatearFechaDDMMYYYY(fechaVencimiento);
 
             const mensaje = `El seguro del vehículo ${marca} ${modelo}, ficha ${ficha}, se vence en ${diasRestantes} día${diasRestantes === 1 ? '' : 's'}, el ${fechaFormateada}.`;
 
@@ -477,6 +518,11 @@ const KM_TRAMO_MAX_KM = 5;
 // CRUZAR el umbral, no en cada paquete mientras se mantiene por debajo.
 const KM_AVISO_CAMBIO_ACEITE = 300;
 const ultimoKmFaltantesConocido = new Map();
+
+// Km que faltan para el proximo cambio de aceite (negativo = ya se paso)
+function calcularKmFaltantesAceite(kilometraje, kilometrajeUltimoCambio, intervaloCambioAceite) {
+    return Math.round(Number(kilometrajeUltimoCambio) + Number(intervaloCambioAceite) - Number(kilometraje));
+}
 
 function distanciaHaversineKm(lat1, lon1, lat2, lon2) {
     const R = 6371;
@@ -549,7 +595,7 @@ async function actualizarYNotificar(imei, latitud, longitud, velocidad) {
                 );
             }
 
-            const kmFaltantes = Math.round(Number(kilometrajeUltimoCambio) + Number(intervaloCambioAceite) - Number(kilometraje));
+            const kmFaltantes = calcularKmFaltantesAceite(kilometraje, kilometrajeUltimoCambio, intervaloCambioAceite);
             const kmFaltantesAnterior = ultimoKmFaltantesConocido.get(imei) ?? Infinity;
             ultimoKmFaltantesConocido.set(imei, kmFaltantes);
             if (kmFaltantesAnterior > 0 && kmFaltantes <= 0) {

@@ -12,6 +12,7 @@ import TrucksScreen from "../screens/TrucksScreen";
 import TruckDetailScreen from "../screens/TruckDetailScreen";
 import LiveMapScreen from "../screens/LiveMapScreen";
 import RouteAlertDetailScreen from "../screens/RouteAlertDetailScreen";
+import ControlesScreen from "../screens/ControlesScreen";
 import SpeedAlertDetailScreen from "../screens/SpeedAlertDetailScreen";
 import ProfileScreen from "../screens/ProfileScreen";
 
@@ -47,6 +48,7 @@ function AppStack() {
       <Stack.Screen name="Trucks" component={TrucksScreen} />
       <Stack.Screen name="TruckDetail" component={TruckDetailScreen} />
       <Stack.Screen name="LiveMap" component={LiveMapScreen} />
+      <Stack.Screen name="Controles" component={ControlesScreen} />
       <Stack.Screen name="RouteAlertDetail" component={RouteAlertDetailScreen} />
       <Stack.Screen name="SpeedAlertDetail" component={SpeedAlertDetailScreen} />
       <Stack.Screen name="Profile" component={ProfileScreen} />
