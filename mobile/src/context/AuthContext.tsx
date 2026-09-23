@@ -24,6 +24,8 @@ export interface Camion {
   velocidad: number;
   fecha_vencimiento_seguro: string | null;
   ultima_actualizacion: string | null;
+  protocolo: string;
+  numero_chip: string | null;
 }
 
 export interface User {
