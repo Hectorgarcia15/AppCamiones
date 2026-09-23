@@ -4,6 +4,7 @@ import MapView, { Marker } from 'react-native-maps';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { useAuth, API_BASE_URL } from '../context/AuthContext';
 import { socketService } from '../services/socketService';
+import { formatearUltimaSenal } from '../utils/formatearUltimaSenal';
 
 // Comandos SMS del tracker HQ (ej. ACCURATE Tracker) - no confundir con el
 // apagado GT06, que va por el servidor y sí confirma el resultado.
@@ -27,7 +28,10 @@ export default function LiveMapScreen() {
         velocidad: camionParam?.velocidad || 0,
     });
 
-    const [tieneSenal, setTieneSenal] = useState(false);
+    // Si el camion ya tiene una ubicacion guardada la mostramos de una vez, en vez
+    // de quedarnos en "Esperando señal GPS..." hasta el proximo reporte en vivo
+    const [tieneSenal, setTieneSenal] = useState<boolean>(!!(camionParam?.latitud && camionParam?.longitud));
+    const [ultimaActualizacion, setUltimaActualizacion] = useState<string | null>(camionParam?.ultima_actualizacion || null);
     const [apagando, setApagando] = useState(false);
     const [bloqueado, setBloqueado] = useState<boolean>(!!camionParam?.bloqueado_remoto);
 
@@ -41,6 +45,7 @@ export default function LiveMapScreen() {
                 velocidad: datos.velocidad || 0,
             });
             setTieneSenal(true);
+            setUltimaActualizacion(datos.ultima_actualizacion || new Date().toISOString());
         }
     }, [nombreCamion]);
 
@@ -246,6 +251,9 @@ export default function LiveMapScreen() {
                     <Text style={styles.infoText}>
                         {tieneSenal ? `Velocidad: ${camion.velocidad} km/h` : "Esperando señal GPS..."}
                     </Text>
+                    {tieneSenal && (
+                        <Text style={styles.imeiText}>Última señal: {formatearUltimaSenal(ultimaActualizacion)}</Text>
+                    )}
                     <Text style={styles.imeiText}>IMEI: {imei}</Text>
                 </View>
             </View>
