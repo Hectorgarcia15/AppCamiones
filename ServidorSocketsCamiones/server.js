@@ -611,11 +611,24 @@ function convertirADecimal(coordenada, direccion) {
 
 // ==================== TRADUCTOR HQ (protocolo de texto, tracker ACCURATE) ====================
 // Formato de ejemplo: *HQ,865205030330012,V1,145452,A,2240.55181,N,11358.32389,E,0.00,0,100815,FFFFFBFF#
+// Heartbeat ("sigo vivo", sin ubicacion): *HQ,867232057086051,HTBT#
 function procesarTramaHQ(tramaCruda) {
     if (!tramaCruda || !tramaCruda.startsWith('*HQ,')) return null;
     const partes = tramaCruda.slice(1, -1).split(',');
-    if (partes[4] !== 'A') return null;
     const imei = partes[1];
+    const tipoMensaje = partes[2];
+
+    if (tipoMensaje === 'HTBT') {
+        return { tipo: 'heartbeat', imei };
+    }
+    // 'V' = trama de ubicacion pero el GPS todavia no tiene señal (fix) valida
+    if (partes[4] === 'V') {
+        return { tipo: 'sin_senal', imei, tipoMensaje };
+    }
+    if (partes[4] !== 'A') {
+        return { tipo: 'desconocido', imei, tipoMensaje };
+    }
+
     const latitudRaw = partes[5];
     const direccionLat = partes[6];
     const longitudRaw = partes[7];
@@ -624,6 +637,7 @@ function procesarTramaHQ(tramaCruda) {
     const longitud = convertirADecimal(longitudRaw, direccionLon);
     const velocidad = parseFloat(partes[9]) * 1.852;
     return {
+        tipo: 'ubicacion',
         imei: imei,
         latitud: latitud,
         longitud: longitud,
@@ -801,9 +815,18 @@ const tcpServerHQ = net.createServer((socket) => {
             bufferAcumulado = bufferAcumulado.slice(finIdx + 1);
 
             const datosCamion = procesarTramaHQ(tramaCruda);
-            if (datosCamion) {
+            if (!datosCamion) continue;
+
+            if (datosCamion.tipo === 'ubicacion') {
                 console.log(`\n⚡ [HQ] Camión IMEI: ${datosCamion.imei}`);
                 await actualizarYNotificar(datosCamion.imei, datosCamion.latitud, datosCamion.longitud, datosCamion.velocidad);
+            } else if (datosCamion.tipo === 'heartbeat') {
+                // Sin ubicacion: solo lo registramos, no tocamos la BD ni avisamos a la app
+                console.log(`💓 [HQ] Heartbeat de IMEI ${datosCamion.imei}`);
+            } else if (datosCamion.tipo === 'sin_senal') {
+                console.log(`📡 [HQ] ${datosCamion.tipoMensaje} sin señal GPS (V) de IMEI ${datosCamion.imei}`);
+            } else {
+                console.log(`❔ [HQ] Tipo de mensaje no reconocido "${datosCamion.tipoMensaje}" de IMEI ${datosCamion.imei}`);
             }
         }
     });
