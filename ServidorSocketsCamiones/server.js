@@ -784,8 +784,15 @@ tcpServerCoban.listen(5001, () => {
 // ==================== RECEPTOR 3: PROTOCOLO HQ (tracker ACCURATE) (Puerto 5003) ====================
 const tcpServerHQ = net.createServer((socket) => {
     let bufferAcumulado = '';
+    // DIAGNOSTICO TEMPORAL: registramos toda conexion y todo lo que llegue (no solo
+    // ubicaciones validas con 'A') para confirmar si el tracker HQ esta vivo y que
+    // tramas manda. Quitar cuando el equipo este validado.
+    const origen = `${socket.remoteAddress}:${socket.remotePort}`;
+    console.log(`\n🔌 [HQ] Conexión nueva desde ${origen}`);
+    socket.on('close', () => console.log(`🔌 [HQ] Conexión cerrada ${origen}`));
 
     socket.on('data', async (data) => {
+        console.log(`📥 [HQ] Crudo desde ${origen}: ${JSON.stringify(data.toString())}`);
         bufferAcumulado += data.toString();
 
         let finIdx;
