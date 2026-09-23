@@ -190,11 +190,11 @@ export default function LiveMapScreen() {
             </MapView>
 
             <View style={styles.navRow}>
-                <TouchableOpacity style={[styles.backButton, styles.navButton]} onPress={() => navigation.goBack()}>
+                <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
                     <Text style={styles.backButtonText}>⬅ Volver atrás</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                    style={[styles.backButton, styles.navButton, styles.controlesButton]}
+                    style={[styles.backButton, styles.controlesButton]}
                     onPress={() => navigation.navigate('Controles', { camion: camionParam })}
                 >
                     <Text style={styles.backButtonText}>Ir a controles ⚙️</Text>
@@ -268,17 +268,13 @@ const styles = StyleSheet.create({
         right: 20,
         zIndex: 10,
         flexDirection: 'row',
+        justifyContent: 'center',
         gap: 10,
-    },
-    // Cada boton de navegacion ocupa la mitad del ancho disponible
-    navButton: {
-        flex: 1,
-        alignItems: 'center',
     },
     backButton: {
         backgroundColor: 'rgba(30, 41, 59, 0.9)',
         paddingVertical: 12,
-        paddingHorizontal: 18,
+        paddingHorizontal: 12,
         borderRadius: 8,
         borderWidth: 1,
         borderColor: '#475569',
@@ -333,11 +329,14 @@ const styles = StyleSheet.create({
         bottom: 40,
         left: 20,
         right: 20,
+        // El recuadro toma el ancho de su contenido, centrado, en vez de llenar la fila
+        alignItems: 'center',
     },
     infoBox: {
         backgroundColor: 'rgba(15, 23, 42, 0.95)',
+        maxWidth: '85%',
         paddingVertical: 8,
-        paddingHorizontal: 16,
+        paddingHorizontal: 14,
         borderRadius: 12,
         alignItems: 'center',
         borderWidth: 1,
