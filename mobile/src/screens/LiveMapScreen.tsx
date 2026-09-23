@@ -12,6 +12,9 @@ import { obtenerDireccion, distanciaMetros } from '../utils/obtenerDireccion';
 const METROS_PARA_ACTUALIZAR_DIRECCION = 100;
 const SEGUNDOS_ENTRE_DIRECCIONES = 30;
 
+// ~1.1 km de alto de pantalla: se ven las calles del sector
+const ZOOM_INICIAL_DELTA = 0.01;
+
 export default function LiveMapScreen() {
     const route = useRoute<any>();
     const navigation = useNavigation<any>();
@@ -36,17 +39,18 @@ export default function LiveMapScreen() {
     const [bloqueado, setBloqueado] = useState<boolean>(!!camionParam?.bloqueado_remoto);
     const [direccion, setDireccion] = useState<string | null>(null);
     const [buscandoDireccion, setBuscandoDireccion] = useState(false);
+    const mapRef = useRef<MapView>(null);
     const ultimaConsultaDireccion = useRef<{ latitud: number; longitud: number; tiempo: number } | null>(null);
 
     // Handler nombrado, para poder quitar exactamente ESTE listener al salir
     const manejarActualizacion = useCallback((datos: any) => {
         if (datos && datos.latitud && datos.longitud) {
             console.log(`🚚 ¡Coordenada recibida para ${nombreCamion}!`, datos);
-            setCamion({
-                latitud: Number(datos.latitud),
-                longitud: Number(datos.longitud),
-                velocidad: datos.velocidad || 0,
-            });
+            const latitud = Number(datos.latitud);
+            const longitud = Number(datos.longitud);
+            setCamion({ latitud, longitud, velocidad: datos.velocidad || 0 });
+            // Sigue al camion cambiando solo el centro, sin tocar el zoom del usuario
+            mapRef.current?.animateCamera({ center: { latitude: latitud, longitude: longitud } });
             setTieneSenal(true);
             setUltimaActualizacion(datos.ultima_actualizacion || new Date().toISOString());
         }
@@ -166,19 +170,16 @@ export default function LiveMapScreen() {
 
     return (
         <View style={styles.container}>
+            {/* Solo initialRegion (sin "region"): asi el zoom que ponga el usuario
+                no se reinicia en cada redibujado de la pantalla */}
             <MapView
+                ref={mapRef}
                 style={styles.map}
                 initialRegion={{
                     latitude: camion.latitud,
                     longitude: camion.longitud,
-                    latitudeDelta: 0.05,
-                    longitudeDelta: 0.05,
-                }}
-                region={{
-                    latitude: camion.latitud,
-                    longitude: camion.longitud,
-                    latitudeDelta: 0.05,
-                    longitudeDelta: 0.05,
+                    latitudeDelta: ZOOM_INICIAL_DELTA,
+                    longitudeDelta: ZOOM_INICIAL_DELTA,
                 }}
             >
                 <Marker
