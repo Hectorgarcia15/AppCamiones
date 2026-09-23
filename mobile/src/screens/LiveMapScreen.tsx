@@ -329,14 +329,11 @@ const styles = StyleSheet.create({
         bottom: 40,
         left: 20,
         right: 20,
-        // El recuadro toma el ancho de su contenido, centrado, en vez de llenar la fila
-        alignItems: 'center',
     },
     infoBox: {
         backgroundColor: 'rgba(15, 23, 42, 0.95)',
-        maxWidth: '85%',
-        paddingVertical: 8,
-        paddingHorizontal: 14,
+        paddingVertical: 4,
+        paddingHorizontal: 16,
         borderRadius: 12,
         alignItems: 'center',
         borderWidth: 1,
@@ -345,19 +342,16 @@ const styles = StyleSheet.create({
     truckName: {
         color: '#9cbbfe',
         fontWeight: '900',
-        fontSize: 18,
-        marginBottom: 2,
+        fontSize: 15,
     },
     direccionText: {
         color: '#cbd5e1',
-        fontSize: 14,
-        marginBottom: 2,
+        fontSize: 12,
     },
     infoText: {
         color: 'white',
         fontWeight: 'bold',
         fontSize: 15,
-        marginBottom: 2,
     },
     imeiText: {
         color: '#64748b',
