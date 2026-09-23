@@ -190,11 +190,11 @@ export default function LiveMapScreen() {
             </MapView>
 
             <View style={styles.navRow}>
-                <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+                <TouchableOpacity style={[styles.backButton, styles.navButton]} onPress={() => navigation.goBack()}>
                     <Text style={styles.backButtonText}>⬅ Volver atrás</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                    style={[styles.backButton, styles.controlesButton]}
+                    style={[styles.backButton, styles.navButton, styles.controlesButton]}
                     onPress={() => navigation.navigate('Controles', { camion: camionParam })}
                 >
                     <Text style={styles.backButtonText}>Ir a controles ⚙️</Text>
@@ -268,7 +268,12 @@ const styles = StyleSheet.create({
         right: 20,
         zIndex: 10,
         flexDirection: 'row',
-        justifyContent: 'space-between',
+        gap: 10,
+    },
+    // Cada boton de navegacion ocupa la mitad del ancho disponible
+    navButton: {
+        flex: 1,
+        alignItems: 'center',
     },
     backButton: {
         backgroundColor: 'rgba(30, 41, 59, 0.9)',
@@ -331,7 +336,8 @@ const styles = StyleSheet.create({
     },
     infoBox: {
         backgroundColor: 'rgba(15, 23, 42, 0.95)',
-        padding: 16,
+        paddingVertical: 8,
+        paddingHorizontal: 16,
         borderRadius: 12,
         alignItems: 'center',
         borderWidth: 1,
@@ -341,18 +347,18 @@ const styles = StyleSheet.create({
         color: '#9cbbfe',
         fontWeight: '900',
         fontSize: 18,
-        marginBottom: 4,
+        marginBottom: 2,
     },
     direccionText: {
         color: '#cbd5e1',
         fontSize: 14,
-        marginBottom: 4,
+        marginBottom: 2,
     },
     infoText: {
         color: 'white',
         fontWeight: 'bold',
         fontSize: 15,
-        marginBottom: 4,
+        marginBottom: 2,
     },
     imeiText: {
         color: '#64748b',
