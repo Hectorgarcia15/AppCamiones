@@ -1,15 +1,21 @@
-﻿import React, { useEffect, useState, useCallback } from 'react';
+﻿import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, Alert, Linking, Platform } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { useAuth, API_BASE_URL } from '../context/AuthContext';
 import { socketService } from '../services/socketService';
 import { formatearUltimaSenal } from '../utils/formatearUltimaSenal';
+import { obtenerDireccion, distanciaMetros } from '../utils/obtenerDireccion';
 
 // Comandos SMS del tracker HQ (ej. ACCURATE Tracker) - no confundir con el
 // apagado GT06, que va por el servidor y sí confirma el resultado.
 const COMANDO_APAGAR_HQ = '#stopoil#123456#';
 const COMANDO_REACTIVAR_HQ = '#supplyoil#123456#';
+
+// La direccion se vuelve a buscar solo si el camion se movio mas de esto,
+// y nunca mas seguido que cada SEGUNDOS_ENTRE_DIRECCIONES
+const METROS_PARA_ACTUALIZAR_DIRECCION = 100;
+const SEGUNDOS_ENTRE_DIRECCIONES = 30;
 
 export default function LiveMapScreen() {
     const route = useRoute<any>();
@@ -34,6 +40,9 @@ export default function LiveMapScreen() {
     const [ultimaActualizacion, setUltimaActualizacion] = useState<string | null>(camionParam?.ultima_actualizacion || null);
     const [apagando, setApagando] = useState(false);
     const [bloqueado, setBloqueado] = useState<boolean>(!!camionParam?.bloqueado_remoto);
+    const [direccion, setDireccion] = useState<string | null>(null);
+    const [buscandoDireccion, setBuscandoDireccion] = useState(false);
+    const ultimaConsultaDireccion = useRef<{ latitud: number; longitud: number; tiempo: number } | null>(null);
 
     // Handler nombrado, para poder quitar exactamente ESTE listener al salir
     const manejarActualizacion = useCallback((datos: any) => {
@@ -65,6 +74,27 @@ export default function LiveMapScreen() {
             socket.off(eventoSocket, manejarActualizacion);
         };
     }, [imei, user?.token, manejarActualizacion]);
+
+    // Nombre de la calle: se busca al abrir la pantalla y luego solo cuando el
+    // camion se movio lo suficiente, para no consultar el geocodificador con
+    // cada reporte del GPS
+    useEffect(() => {
+        if (!tieneSenal) return;
+
+        const anterior = ultimaConsultaDireccion.current;
+        if (anterior) {
+            const movido = distanciaMetros(anterior.latitud, anterior.longitud, camion.latitud, camion.longitud);
+            const segundos = (Date.now() - anterior.tiempo) / 1000;
+            if (movido < METROS_PARA_ACTUALIZAR_DIRECCION || segundos < SEGUNDOS_ENTRE_DIRECCIONES) return;
+        }
+
+        ultimaConsultaDireccion.current = { latitud: camion.latitud, longitud: camion.longitud, tiempo: Date.now() };
+        setBuscandoDireccion(true);
+        obtenerDireccion(camion.latitud, camion.longitud).then((resultado) => {
+            setDireccion(resultado);
+            setBuscandoDireccion(false);
+        });
+    }, [camion.latitud, camion.longitud, tieneSenal]);
 
     const camionDetenido = camion.velocidad === 0;
 
@@ -173,7 +203,7 @@ export default function LiveMapScreen() {
                 <Marker
                     coordinate={{ latitude: camion.latitud, longitude: camion.longitud }}
                     title={nombreCamion}
-                    description={`Velocidad: ${camion.velocidad} km/h`}
+                    description={direccion ? `${direccion} · ${camion.velocidad} km/h` : `Velocidad: ${camion.velocidad} km/h`}
                 />
             </MapView>
 
@@ -248,6 +278,11 @@ export default function LiveMapScreen() {
 
                 <View style={styles.infoBox}>
                     <Text style={styles.truckName}>{nombreCamion}</Text>
+                    {tieneSenal && (direccion || buscandoDireccion) && (
+                        <Text style={styles.direccionText}>
+                            📍 {direccion || 'Buscando dirección...'}
+                        </Text>
+                    )}
                     <Text style={styles.infoText}>
                         {tieneSenal ? `Velocidad: ${camion.velocidad} km/h` : "Esperando señal GPS..."}
                     </Text>
@@ -402,6 +437,11 @@ const styles = StyleSheet.create({
         color: '#9cbbfe',
         fontWeight: '900',
         fontSize: 18,
+        marginBottom: 4,
+    },
+    direccionText: {
+        color: '#cbd5e1',
+        fontSize: 14,
         marginBottom: 4,
     },
     infoText: {
