@@ -609,6 +609,29 @@ function convertirADecimal(coordenada, direccion) {
     return parseFloat(decimal.toFixed(6));
 }
 
+// ==================== TRADUCTOR HQ (protocolo de texto, tracker ACCURATE) ====================
+// Formato de ejemplo: *HQ,865205030330012,V1,145452,A,2240.55181,N,11358.32389,E,0.00,0,100815,FFFFFBFF#
+function procesarTramaHQ(tramaCruda) {
+    if (!tramaCruda || !tramaCruda.startsWith('*HQ,')) return null;
+    const partes = tramaCruda.slice(1, -1).split(',');
+    if (partes[4] !== 'A') return null;
+    const imei = partes[1];
+    const latitudRaw = partes[5];
+    const direccionLat = partes[6];
+    const longitudRaw = partes[7];
+    const direccionLon = partes[8];
+    const latitud = convertirADecimal(latitudRaw, direccionLat);
+    const longitud = convertirADecimal(longitudRaw, direccionLon);
+    const velocidad = parseFloat(partes[9]) * 1.852;
+    return {
+        imei: imei,
+        latitud: latitud,
+        longitud: longitud,
+        velocidad: Math.round(velocidad),
+        fecha_reporte: new Date()
+    };
+}
+
 // ==================== TRADUCTOR GT06 (protocolo binario del Concox) ====================
 const TABLA_CRC = [
     0x0000,0x1189,0x2312,0x329b,0x4624,0x57ad,0x6536,0x74bf,
@@ -756,6 +779,32 @@ const tcpServerCoban = net.createServer((socket) => {
 
 tcpServerCoban.listen(5001, () => {
     console.log('🚀 RECEPTOR COBAN LISTO [Puerto 5001]');
+});
+
+// ==================== RECEPTOR 3: PROTOCOLO HQ (tracker ACCURATE) (Puerto 5003) ====================
+const tcpServerHQ = net.createServer((socket) => {
+    let bufferAcumulado = '';
+
+    socket.on('data', async (data) => {
+        bufferAcumulado += data.toString();
+
+        let finIdx;
+        while ((finIdx = bufferAcumulado.indexOf('#')) !== -1) {
+            const tramaCruda = bufferAcumulado.slice(0, finIdx + 1).trim();
+            bufferAcumulado = bufferAcumulado.slice(finIdx + 1);
+
+            const datosCamion = procesarTramaHQ(tramaCruda);
+            if (datosCamion) {
+                console.log(`\n⚡ [HQ] Camión IMEI: ${datosCamion.imei}`);
+                await actualizarYNotificar(datosCamion.imei, datosCamion.latitud, datosCamion.longitud, datosCamion.velocidad);
+            }
+        }
+    });
+    socket.on('error', () => {});
+});
+
+tcpServerHQ.listen(5003, () => {
+    console.log('📨 RECEPTOR HQ (ACCURATE) LISTO [Puerto 5003]');
 });
 
 // ==================== RECEPTOR 2: PROTOCOLO GT06 / CONCOX (Puerto 5002) ====================
