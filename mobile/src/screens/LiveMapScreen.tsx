@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, Alert } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
+import MapView, { Marker, Polyline } from 'react-native-maps';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { useAuth, API_BASE_URL } from '../context/AuthContext';
 import { socketService } from '../services/socketService';
@@ -12,8 +12,14 @@ import { obtenerDireccion, distanciaMetros } from '../utils/obtenerDireccion';
 const METROS_PARA_ACTUALIZAR_DIRECCION = 100;
 const SEGUNDOS_ENTRE_DIRECCIONES = 30;
 
-// ~1.1 km de alto de pantalla: se ven las calles del sector
-const ZOOM_INICIAL_DELTA = 0.01;
+// ~550 m de alto de pantalla: vista cerrada sobre las calles junto al camion
+const ZOOM_INICIAL_DELTA = 0.005;
+
+// Tope de puntos de la estela, para que no crezca sin limite si la pantalla
+// queda abierta horas (con un reporte cada ~10 s son mas de 80 min de camino)
+const MAX_PUNTOS_ESTELA = 500;
+
+type Punto = { latitude: number; longitude: number };
 
 export default function LiveMapScreen() {
     const route = useRoute<any>();
@@ -39,6 +45,10 @@ export default function LiveMapScreen() {
     const [bloqueado, setBloqueado] = useState<boolean>(!!camionParam?.bloqueado_remoto);
     const [direccion, setDireccion] = useState<string | null>(null);
     const [buscandoDireccion, setBuscandoDireccion] = useState(false);
+    // Estela del recorrido: solo con las ubicaciones que llegan en vivo mientras
+    // la pantalla esta abierta. No arranca desde la ultima ubicacion guardada
+    // porque puede ser vieja y se dibujaria una linea recta falsa hasta la nueva
+    const [estela, setEstela] = useState<Punto[]>([]);
     const mapRef = useRef<MapView>(null);
     const ultimaConsultaDireccion = useRef<{ latitud: number; longitud: number; tiempo: number } | null>(null);
 
@@ -49,6 +59,15 @@ export default function LiveMapScreen() {
             const latitud = Number(datos.latitud);
             const longitud = Number(datos.longitud);
             setCamion({ latitud, longitud, velocidad: datos.velocidad || 0 });
+            setEstela((anterior) => {
+                const ultimo = anterior[anterior.length - 1];
+                // Con el camion parado el GPS repite la misma coordenada: no la duplicamos
+                if (ultimo && ultimo.latitude === latitud && ultimo.longitude === longitud) {
+                    return anterior;
+                }
+                const nueva = [...anterior, { latitude: latitud, longitude: longitud }];
+                return nueva.length > MAX_PUNTOS_ESTELA ? nueva.slice(-MAX_PUNTOS_ESTELA) : nueva;
+            });
             // Sigue al camion cambiando solo el centro, sin tocar el zoom del usuario
             mapRef.current?.animateCamera({ center: { latitude: latitud, longitude: longitud } });
             setTieneSenal(true);
@@ -182,6 +201,13 @@ export default function LiveMapScreen() {
                     longitudeDelta: ZOOM_INICIAL_DELTA,
                 }}
             >
+                {estela.length > 1 && (
+                    <Polyline
+                        coordinates={estela}
+                        strokeColor="#3b82f6"
+                        strokeWidth={4}
+                    />
+                )}
                 <Marker
                     coordinate={{ latitude: camion.latitud, longitude: camion.longitud }}
                     title={nombreCamion}
