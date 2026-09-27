@@ -24,7 +24,19 @@ class SocketService {
     }
 
     if (!this.socket) {
-      this.socket = io(API_BASE_URL);
+      this.socket = io(API_BASE_URL, {
+        // Reconexion automatica explicita: el celular pierde senal a ratos
+        // (cambio de torre, tuneles) y nunca debe dejar de reintentar.
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 10000,
+        randomizationFactor: 0.5,
+        timeout: 10000,
+        // En React Native el long-polling inicial falla seguido con redes
+        // moviles inestables; ir directo a websocket reconecta mas rapido.
+        transports: ['websocket'],
+      });
 
       // Se dispara en la primera conexion y en cada reconexion automatica
       this.socket.on('connect', () => {
@@ -33,8 +45,22 @@ class SocketService {
         }
       });
 
-      this.socket.on('disconnect', () => {
+      this.socket.on('disconnect', (razon) => {
         this.autenticado = false;
+        console.log('🔌 Socket desconectado:', razon);
+        // Si fue el servidor quien cerro la conexion, socket.io NO reintenta
+        // solo; hay que pedir la reconexion a mano (salvo que sea logout).
+        if (razon === 'io server disconnect' && this.token) {
+          this.socket?.connect();
+        }
+      });
+
+      this.socket.io.on('reconnect_attempt', (intento) => {
+        console.log(`🔄 Reintentando conexion (intento ${intento})...`);
+      });
+
+      this.socket.io.on('reconnect', () => {
+        console.log('✅ Socket reconectado');
       });
 
       this.socket.on('autenticado', (respuesta: { ok: boolean }) => {
