@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, Alert } from 'react-native';
-import MapView, { Marker, Polyline, Camera } from 'react-native-maps';
+import MapView, { MarkerAnimated, AnimatedRegion, Polyline, Camera } from 'react-native-maps';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { useAuth, API_BASE_URL } from '../context/AuthContext';
 import { socketService } from '../services/socketService';
@@ -25,6 +25,10 @@ type Punto = { latitude: number; longitude: number };
 // rumbos al azar: se conserva el ultimo rumbo bueno para no hacer girar el mapa
 const VELOCIDAD_MIN_PARA_RUMBO = 5;
 
+// Duracion del deslizamiento del marcador y la camara hacia cada ubicacion
+// nueva, en vez de saltar de golpe
+const MS_ANIMACION_MOVIMIENTO = 1000;
+
 export default function LiveMapScreen() {
     const route = useRoute<any>();
     const navigation = useNavigation<any>();
@@ -41,6 +45,14 @@ export default function LiveMapScreen() {
         velocidad: camionParam?.velocidad || 0,
     });
 
+    // Posicion animada del marcador: se mueve con timing hacia cada punto nuevo
+    const [posicionMarcador] = useState(() => new AnimatedRegion({
+        latitude: camion.latitud,
+        longitude: camion.longitud,
+        latitudeDelta: 0,
+        longitudeDelta: 0,
+    }));
+
     // Si el camion ya tiene una ubicacion guardada la mostramos de una vez, en vez
     // de quedarnos en "Esperando señal GPS..." hasta el proximo reporte en vivo
     const [tieneSenal, setTieneSenal] = useState<boolean>(!!(camionParam?.latitud && camionParam?.longitud));
@@ -53,10 +65,8 @@ export default function LiveMapScreen() {
     // la pantalla esta abierta. No arranca desde la ultima ubicacion guardada
     // porque puede ser vieja y se dibujaria una linea recta falsa hasta la nueva
     const [estela, setEstela] = useState<Punto[]>([]);
-    // "Norte arriba" (false) o "Seguir dirección" (true). El ref permite leer el
-    // modo dentro del handler del socket sin tener que volver a suscribirlo
-    const [seguirDireccion, setSeguirDireccion] = useState(false);
-    const seguirDireccionRef = useRef(false);
+    // Ultimo rumbo bueno del camion (grados, 0 = norte). El mapa siempre gira
+    // con el; si el protocolo no lo reporta (GT06/Coban) el mapa no gira
     const ultimoRumbo = useRef<number | null>(null);
     const mapRef = useRef<MapView>(null);
     const ultimaConsultaDireccion = useRef<{ latitud: number; longitud: number; tiempo: number } | null>(null);
@@ -77,21 +87,26 @@ export default function LiveMapScreen() {
                 const nueva = [...anterior, { latitude: latitud, longitude: longitud }];
                 return nueva.length > MAX_PUNTOS_ESTELA ? nueva.slice(-MAX_PUNTOS_ESTELA) : nueva;
             });
+            // timing() de AnimatedRegion solo anima las claves que recibe; su tipo
+            // pide una Region completa y toValue, que aqui no aplican
+            posicionMarcador.timing({
+                latitude: latitud, longitude: longitud, duration: MS_ANIMACION_MOVIMIENTO, useNativeDriver: false,
+            } as any).start();
             const rumbo = Number(datos.rumbo);
             if (datos.rumbo != null && Number.isFinite(rumbo) && (datos.velocidad || 0) >= VELOCIDAD_MIN_PARA_RUMBO) {
                 ultimoRumbo.current = rumbo;
             }
-            // Sigue al camion cambiando el centro (y el giro en "Seguir dirección"),
+            // Sigue al camion cambiando el centro y girando el mapa segun su rumbo,
             // sin tocar el zoom del usuario
             const camara: Partial<Camera> = { center: { latitude: latitud, longitude: longitud } };
-            if (seguirDireccionRef.current && ultimoRumbo.current !== null) {
+            if (ultimoRumbo.current !== null) {
                 camara.heading = ultimoRumbo.current;
             }
-            mapRef.current?.animateCamera(camara);
+            mapRef.current?.animateCamera(camara, { duration: MS_ANIMACION_MOVIMIENTO });
             setTieneSenal(true);
             setUltimaActualizacion(datos.ultima_actualizacion || new Date().toISOString());
         }
-    }, [nombreCamion]);
+    }, [nombreCamion, posicionMarcador]);
 
     useEffect(() => {
         if (!user?.token) return;
@@ -132,16 +147,6 @@ export default function LiveMapScreen() {
     }, [camion.latitud, camion.longitud, tieneSenal]);
 
     const camionDetenido = camion.velocidad === 0;
-
-    const alternarOrientacion = () => {
-        const nuevo = !seguirDireccionRef.current;
-        seguirDireccionRef.current = nuevo;
-        setSeguirDireccion(nuevo);
-        // Al activar "Seguir dirección" gira de una vez si ya hay rumbo;
-        // al volver a "Norte arriba" endereza el mapa
-        const heading = nuevo ? ultimoRumbo.current ?? 0 : 0;
-        mapRef.current?.animateCamera({ heading });
-    };
 
     const confirmarApagado = () => {
         Alert.alert(
@@ -236,8 +241,9 @@ export default function LiveMapScreen() {
                         strokeWidth={4}
                     />
                 )}
-                <Marker
-                    coordinate={{ latitude: camion.latitud, longitude: camion.longitud }}
+                <MarkerAnimated
+                    // AnimatedRegion no encaja en el tipo LatLng de la prop, pero es lo que acepta
+                    coordinate={posicionMarcador as any}
                     title={nombreCamion}
                     description={direccion ? `${direccion} · ${camion.velocidad} km/h` : `Velocidad: ${camion.velocidad} km/h`}
                 />
@@ -254,13 +260,6 @@ export default function LiveMapScreen() {
                     <Text style={styles.backButtonText}>Ir a controles ⚙️</Text>
                 </TouchableOpacity>
             </View>
-
-            {/* Solo HQ reporta rumbo por ahora; en GT06/Coban el boton no haria nada */}
-            {esHQ && (
-                <TouchableOpacity style={[styles.backButton, styles.orientacionButton]} onPress={alternarOrientacion}>
-                    <Text style={styles.backButtonText}>{seguirDireccion ? '🧭 Seguir dirección' : '⬆️ Norte arriba'}</Text>
-                </TouchableOpacity>
-            )}
 
             {!esHQ && (
                 <>
@@ -346,13 +345,6 @@ const styles = StyleSheet.create({
     },
     controlesButton: {
         borderColor: '#3b82f6',
-    },
-    // Segunda fila, a la izquierda (a la derecha va APAGAR/REACTIVAR en GT06)
-    orientacionButton: {
-        position: 'absolute',
-        top: 104,
-        left: 20,
-        zIndex: 10,
     },
     // APAGAR/REACTIVAR (GT06) van en una segunda fila, debajo de la navegacion
     apagarButton: {
