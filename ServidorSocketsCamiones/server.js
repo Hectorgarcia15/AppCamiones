@@ -537,7 +537,9 @@ function distanciaHaversineKm(lat1, lon1, lat2, lon2) {
     return R * c;
 }
 
-async function actualizarYNotificar(imei, latitud, longitud, velocidad) {
+// rumbo: grados 0-359 (0 = norte), o null si el protocolo no lo reporta.
+// Solo viaja por el socket para girar el mapa; no se guarda en la base
+async function actualizarYNotificar(imei, latitud, longitud, velocidad, rumbo = null) {
     try {
         const anterior = await pool.query(
             'SELECT latitud, longitud FROM camiones WHERE imei = $1',
@@ -580,7 +582,7 @@ async function actualizarYNotificar(imei, latitud, longitud, velocidad) {
                 kilometraje_ultimo_cambio: kilometrajeUltimoCambio,
                 intervalo_cambio_aceite: intervaloCambioAceite,
             } = resultadoCamion.rows[0];
-            io.to(ownerId).emit(`camion_${imei}`, { imei, latitud, longitud, velocidad, ultima_actualizacion: ultimaActualizacion });
+            io.to(ownerId).emit(`camion_${imei}`, { imei, latitud, longitud, velocidad, rumbo, ultima_actualizacion: ultimaActualizacion });
             console.log(`💾 Ubicación actualizada y enviada a la sala de "${ownerId}"`);
 
             const velocidadAnterior = ultimaVelocidadConocida.get(imei) ?? 0;
@@ -682,12 +684,15 @@ function procesarTramaHQ(tramaCruda) {
     const latitud = convertirADecimal(latitudRaw, direccionLat);
     const longitud = convertirADecimal(longitudRaw, direccionLon);
     const velocidad = parseFloat(partes[9]) * 1.852;
+    // Rumbo en grados respecto al norte (campo siguiente a la velocidad)
+    const rumbo = parseFloat(partes[10]);
     return {
         tipo: 'ubicacion',
         imei: imei,
         latitud: latitud,
         longitud: longitud,
         velocidad: Math.round(velocidad),
+        rumbo: Number.isFinite(rumbo) ? rumbo : null,
         fecha_reporte: new Date()
     };
 }
@@ -865,7 +870,7 @@ const tcpServerHQ = net.createServer((socket) => {
 
             if (datosCamion.tipo === 'ubicacion') {
                 console.log(`\n⚡ [HQ] Camión IMEI: ${datosCamion.imei}`);
-                await actualizarYNotificar(datosCamion.imei, datosCamion.latitud, datosCamion.longitud, datosCamion.velocidad);
+                await actualizarYNotificar(datosCamion.imei, datosCamion.latitud, datosCamion.longitud, datosCamion.velocidad, datosCamion.rumbo);
             } else if (datosCamion.tipo === 'heartbeat') {
                 // Sin ubicacion: no tocamos la BD ni avisamos a la app. Le devolvemos
                 // el mismo heartbeat como ACK (formato no confirmado con el fabricante).
