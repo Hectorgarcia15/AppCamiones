@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, Alert } from 'react-native';
-import MapView, { Marker, Polyline, Camera } from 'react-native-maps';
+import MapView, { MarkerAnimated, AnimatedRegion, Polyline, Camera } from 'react-native-maps';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { useAuth, API_BASE_URL } from '../context/AuthContext';
 import { socketService } from '../services/socketService';
@@ -25,6 +25,10 @@ type Punto = { latitude: number; longitude: number };
 // rumbos al azar: se conserva el ultimo rumbo bueno para no hacer girar el mapa
 const VELOCIDAD_MIN_PARA_RUMBO = 5;
 
+// Duracion del deslizamiento del marcador y la camara hacia cada ubicacion
+// nueva, en vez de saltar de golpe
+const MS_ANIMACION_MOVIMIENTO = 1000;
+
 export default function LiveMapScreen() {
     const route = useRoute<any>();
     const navigation = useNavigation<any>();
@@ -40,6 +44,14 @@ export default function LiveMapScreen() {
         longitud: camionParam?.longitud || -69.9312,
         velocidad: camionParam?.velocidad || 0,
     });
+
+    // Posicion animada del marcador: se mueve con timing hacia cada punto nuevo
+    const [posicionMarcador] = useState(() => new AnimatedRegion({
+        latitude: camion.latitud,
+        longitude: camion.longitud,
+        latitudeDelta: 0,
+        longitudeDelta: 0,
+    }));
 
     // Si el camion ya tiene una ubicacion guardada la mostramos de una vez, en vez
     // de quedarnos en "Esperando señal GPS..." hasta el proximo reporte en vivo
@@ -75,6 +87,11 @@ export default function LiveMapScreen() {
                 const nueva = [...anterior, { latitude: latitud, longitude: longitud }];
                 return nueva.length > MAX_PUNTOS_ESTELA ? nueva.slice(-MAX_PUNTOS_ESTELA) : nueva;
             });
+            // timing() de AnimatedRegion solo anima las claves que recibe; su tipo
+            // pide una Region completa y toValue, que aqui no aplican
+            posicionMarcador.timing({
+                latitude: latitud, longitude: longitud, duration: MS_ANIMACION_MOVIMIENTO, useNativeDriver: false,
+            } as any).start();
             const rumbo = Number(datos.rumbo);
             if (datos.rumbo != null && Number.isFinite(rumbo) && (datos.velocidad || 0) >= VELOCIDAD_MIN_PARA_RUMBO) {
                 ultimoRumbo.current = rumbo;
@@ -85,11 +102,11 @@ export default function LiveMapScreen() {
             if (ultimoRumbo.current !== null) {
                 camara.heading = ultimoRumbo.current;
             }
-            mapRef.current?.animateCamera(camara);
+            mapRef.current?.animateCamera(camara, { duration: MS_ANIMACION_MOVIMIENTO });
             setTieneSenal(true);
             setUltimaActualizacion(datos.ultima_actualizacion || new Date().toISOString());
         }
-    }, [nombreCamion]);
+    }, [nombreCamion, posicionMarcador]);
 
     useEffect(() => {
         if (!user?.token) return;
@@ -224,8 +241,9 @@ export default function LiveMapScreen() {
                         strokeWidth={4}
                     />
                 )}
-                <Marker
-                    coordinate={{ latitude: camion.latitud, longitude: camion.longitud }}
+                <MarkerAnimated
+                    // AnimatedRegion no encaja en el tipo LatLng de la prop, pero es lo que acepta
+                    coordinate={posicionMarcador as any}
                     title={nombreCamion}
                     description={direccion ? `${direccion} · ${camion.velocidad} km/h` : `Velocidad: ${camion.velocidad} km/h`}
                 />
