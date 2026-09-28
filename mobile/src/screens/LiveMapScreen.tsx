@@ -53,10 +53,8 @@ export default function LiveMapScreen() {
     // la pantalla esta abierta. No arranca desde la ultima ubicacion guardada
     // porque puede ser vieja y se dibujaria una linea recta falsa hasta la nueva
     const [estela, setEstela] = useState<Punto[]>([]);
-    // "Norte arriba" (false) o "Seguir dirección" (true). El ref permite leer el
-    // modo dentro del handler del socket sin tener que volver a suscribirlo
-    const [seguirDireccion, setSeguirDireccion] = useState(false);
-    const seguirDireccionRef = useRef(false);
+    // Ultimo rumbo bueno del camion (grados, 0 = norte). El mapa siempre gira
+    // con el; si el protocolo no lo reporta (GT06/Coban) el mapa no gira
     const ultimoRumbo = useRef<number | null>(null);
     const mapRef = useRef<MapView>(null);
     const ultimaConsultaDireccion = useRef<{ latitud: number; longitud: number; tiempo: number } | null>(null);
@@ -81,10 +79,10 @@ export default function LiveMapScreen() {
             if (datos.rumbo != null && Number.isFinite(rumbo) && (datos.velocidad || 0) >= VELOCIDAD_MIN_PARA_RUMBO) {
                 ultimoRumbo.current = rumbo;
             }
-            // Sigue al camion cambiando el centro (y el giro en "Seguir dirección"),
+            // Sigue al camion cambiando el centro y girando el mapa segun su rumbo,
             // sin tocar el zoom del usuario
             const camara: Partial<Camera> = { center: { latitude: latitud, longitude: longitud } };
-            if (seguirDireccionRef.current && ultimoRumbo.current !== null) {
+            if (ultimoRumbo.current !== null) {
                 camara.heading = ultimoRumbo.current;
             }
             mapRef.current?.animateCamera(camara);
@@ -132,16 +130,6 @@ export default function LiveMapScreen() {
     }, [camion.latitud, camion.longitud, tieneSenal]);
 
     const camionDetenido = camion.velocidad === 0;
-
-    const alternarOrientacion = () => {
-        const nuevo = !seguirDireccionRef.current;
-        seguirDireccionRef.current = nuevo;
-        setSeguirDireccion(nuevo);
-        // Al activar "Seguir dirección" gira de una vez si ya hay rumbo;
-        // al volver a "Norte arriba" endereza el mapa
-        const heading = nuevo ? ultimoRumbo.current ?? 0 : 0;
-        mapRef.current?.animateCamera({ heading });
-    };
 
     const confirmarApagado = () => {
         Alert.alert(
@@ -255,13 +243,6 @@ export default function LiveMapScreen() {
                 </TouchableOpacity>
             </View>
 
-            {/* Solo HQ reporta rumbo por ahora; en GT06/Coban el boton no haria nada */}
-            {esHQ && (
-                <TouchableOpacity style={[styles.backButton, styles.orientacionButton]} onPress={alternarOrientacion}>
-                    <Text style={styles.backButtonText}>{seguirDireccion ? '🧭 Seguir dirección' : '⬆️ Norte arriba'}</Text>
-                </TouchableOpacity>
-            )}
-
             {!esHQ && (
                 <>
                     {bloqueado ? (
@@ -346,13 +327,6 @@ const styles = StyleSheet.create({
     },
     controlesButton: {
         borderColor: '#3b82f6',
-    },
-    // Segunda fila, a la izquierda (a la derecha va APAGAR/REACTIVAR en GT06)
-    orientacionButton: {
-        position: 'absolute',
-        top: 104,
-        left: 20,
-        zIndex: 10,
     },
     // APAGAR/REACTIVAR (GT06) van en una segunda fila, debajo de la navegacion
     apagarButton: {
