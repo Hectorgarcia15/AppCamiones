@@ -43,6 +43,7 @@
 ],
     "android": {
       "package": "com.hector.appcamiones",
+      "googleServicesFile": "./google-services.json",
       "config": {
         "googleMaps": {
           "apiKey": "AIzaSyC22YFVXUw5sPeJjEX23U5Skxjc5nUAiYE"

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "192968451381",
+    "project_id": "hecgar-gps",
+    "storage_bucket": "hecgar-gps.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:192968451381:android:1fbed3972f5b0784bd187c",
+        "android_client_info": {
+          "package_name": "com.hector.appcamiones"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDwgarFTPpu4AGJSCiNM8n2MyTaze3txkc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

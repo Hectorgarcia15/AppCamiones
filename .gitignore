@@ -7,3 +7,6 @@ dist/
 
 .eas-inspect/
 *.sql
+
+# Claves privadas de cuentas de servicio de Firebase (FCM V1): van solo en EAS, nunca en git
+*firebase-adminsdk*.json
