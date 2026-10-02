@@ -64,7 +64,7 @@ app.get('/api/mis-camiones', verificarToken, async (req, res) => {
 app.get('/api/camion/:imei', verificarToken, async (req, res) => {
     try {
         const resultado = await pool.query(
-            `SELECT owner_id, imei, latitud, longitud, velocidad, ultima_actualizacion, bloqueado_remoto
+            `SELECT owner_id, imei, latitud, longitud, velocidad, ultima_actualizacion, bloqueado_remoto, motor_encendido
              FROM camiones WHERE imei = $1`,
             [req.params.imei]
         );
@@ -84,6 +84,7 @@ app.get('/api/camion/:imei', verificarToken, async (req, res) => {
             velocidad: fila.velocidad,
             ultima_actualizacion: fila.ultima_actualizacion,
             bloqueado_remoto: fila.bloqueado_remoto,
+            motor_encendido: fila.motor_encendido,
         });
     } catch (error) {
         res.status(500).json({ error: 'Error obteniendo la ubicacion del camion' });
@@ -311,15 +312,25 @@ function tituloPorTipoAlerta(tipo) {
     }
 }
 
+// Alertas que suenan con el "pin pin pin" propio. En Android el sonido va
+// atado al canal: 'alertas-pin' lo crea la app (pushNotificationService.ts)
+// con el archivo pinpin.wav incluido en el APK. Una app vieja sin ese canal
+// muestra la notificacion igual, por el canal por defecto.
+const TIPOS_CON_SONIDO_PIN = new Set(['encendido', 'apagado', 'velocidad']);
+const CANAL_PUSH_PIN = 'alertas-pin';
+const SONIDO_PUSH_PIN = 'pinpin.wav';
+
 // Manda un push (Expo Push API) a todos los dispositivos registrados de un dueño.
 async function enviarPush(ownerId, titulo, mensaje, datosExtra) {
     try {
         const tokens = await pool.query('SELECT token FROM push_tokens WHERE owner_id = $1', [ownerId]);
         if (tokens.rows.length === 0) return;
 
+        const conPin = TIPOS_CON_SONIDO_PIN.has(datosExtra?.tipo);
         const mensajes = tokens.rows.map((fila) => ({
             to: fila.token,
-            sound: 'default',
+            sound: conPin ? SONIDO_PUSH_PIN : 'default',
+            ...(conPin ? { channelId: CANAL_PUSH_PIN, priority: 'high' } : {}),
             title: titulo,
             body: mensaje,
             data: datosExtra || {},
@@ -363,8 +374,13 @@ async function dispararAlerta(ownerId, imei, tipo, mensaje, datosExtra) {
 const RECORDATORIO_MOTOR_INTERVALO_MS = 10 * 60 * 1000;
 const timersRecordatorioMotor = new Map(); // imei -> intervalId
 
+// DESACTIVADO a pedido del dueño: con la deteccion por velocidad sonaria cada
+// 10 min mientras el camion circula. Poner en true para reactivarlo.
+const RECORDATORIO_MOTOR_ACTIVO = false;
+
 function iniciarRecordatorioMotor(ownerId, imei, ficha) {
     detenerRecordatorioMotor(imei);
+    if (!RECORDATORIO_MOTOR_ACTIVO) return;
     const intervalId = setInterval(() => {
         const mensaje = `Unidad ${ficha} sigue con el motor encendido.`;
         io.to(ownerId).emit('alerta', { imei, tipo: 'recordatorio_motor', mensaje, fecha: new Date().toISOString() });
@@ -390,6 +406,13 @@ function detenerRecordatorioMotor(imei) {
 // conectado, comparar los "cuerpoHex" logueados en cada estado, y ajustar
 // esta mascara si el bit que cambia no es este.
 const MASCARA_BIT_ACC = 0x02;
+
+// DESACTIVADO: el cable de ignicion todavia no esta conectado en el tracker,
+// asi que el bit ACC no es confiable y chocaria con la deteccion por
+// velocidad (ver evaluarMotorPorVelocidad). Ponerlo en true cuando se conecte
+// el cable y se confirme MASCARA_BIT_ACC. Mientras este en false tampoco
+// corre el refuerzo del corte si intentan arrancar con llave estando bloqueado.
+const DETECTAR_IGNICION_POR_CABLE = false;
 
 function interpretarEstadoTerminal(cuerpoHex) {
     if (!cuerpoHex || cuerpoHex.length < 2) return null;
@@ -530,10 +553,105 @@ async function revisarVencimientosSeguro() {
 }
 
 // ==================== FUNCION COMPARTIDA: GUARDAR Y NOTIFICAR ====================
-const VELOCIDAD_MAX_PERMITIDA = 80;
-// Ultima velocidad conocida por IMEI, para disparar la alerta solo al CRUZAR
-// el umbral (no en cada paquete mientras se mantiene arriba de 80).
-const ultimaVelocidadConocida = new Map();
+const VELOCIDAD_MAX_PERMITIDA = 75;
+// La alerta se dispara solo al CRUZAR 75 hacia arriba, y no se vuelve a armar
+// hasta bajar de 70: asi un camion que oscila entre 74 y 76 no manda un aviso
+// tras otro
+const VELOCIDAD_REARME_ALERTA = 70;
+// IMEIs que ya avisaron exceso y todavia no bajaron de VELOCIDAD_REARME_ALERTA
+const excesoVelocidadActivo = new Set();
+
+// ==================== MOTOR ENCENDIDO/APAGADO POR VELOCIDAD ====================
+// Aproximacion mientras el cable de ignicion no este conectado:
+// - Encendido: 2 reportes seguidos a >= 10 km/h separados por >= 20 s (un
+//   pico suelto por error del GPS con el camion parado no cuenta).
+// - Apagado: < 3 km/h sin interrupcion durante 8 min (un semaforo o un tapon
+//   corto no cuenta). Se mide con un timer en el servidor, asi se apaga aunque
+//   el tracker deje de reportar al estacionarse. Solo un reporte >= 10 km/h
+//   cancela el conteo, para que el ruido del GPS parado no lo reinicie.
+const VELOCIDAD_MOVIMIENTO = 10;
+const SEGUNDOS_MIN_ENTRE_REPORTES_ENCENDIDO = 20;
+const VELOCIDAD_DETENIDO = 3;
+const MS_DETENIDO_PARA_APAGADO = 8 * 60 * 1000;
+
+const primerReporteEnMovimiento = new Map(); // imei -> timestamp ms
+const timersApagadoPorVelocidad = new Map(); // imei -> timeoutId
+
+async function cambiarEstadoMotor(ownerId, imei, ficha, encendido) {
+    await pool.query('UPDATE camiones SET motor_encendido = $1 WHERE imei = $2', [encendido, imei]);
+    console.log(`🔧 Motor ${encendido ? 'ENCENDIDO' : 'APAGADO'} (por velocidad) en IMEI ${imei}`);
+    if (encendido) {
+        await dispararAlerta(ownerId, imei, 'encendido', `Unidad ${ficha} encendió el motor.`, {});
+        iniciarRecordatorioMotor(ownerId, imei, ficha);
+    } else {
+        await dispararAlerta(ownerId, imei, 'apagado', `Unidad ${ficha} apagó el motor.`, {});
+        detenerRecordatorioMotor(imei);
+    }
+}
+
+function cancelarApagadoPorVelocidad(imei) {
+    const timeoutId = timersApagadoPorVelocidad.get(imei);
+    if (timeoutId) {
+        clearTimeout(timeoutId);
+        timersApagadoPorVelocidad.delete(imei);
+    }
+}
+
+function programarApagadoPorVelocidad(ownerId, imei, ficha, ms = MS_DETENIDO_PARA_APAGADO) {
+    if (timersApagadoPorVelocidad.has(imei)) return;
+    const timeoutId = setTimeout(async () => {
+        timersApagadoPorVelocidad.delete(imei);
+        try {
+            // Se relee: pudo apagarse mientras tanto (ej. apagado remoto)
+            const fila = await pool.query('SELECT motor_encendido FROM camiones WHERE imei = $1', [imei]);
+            if (fila.rows.length > 0 && fila.rows[0].motor_encendido) {
+                await cambiarEstadoMotor(ownerId, imei, ficha, false);
+            }
+        } catch (error) {
+            console.log(`❌ Error marcando motor apagado: ${error.message}`);
+        }
+    }, ms);
+    timersApagadoPorVelocidad.set(imei, timeoutId);
+}
+
+async function evaluarMotorPorVelocidad(ownerId, imei, ficha, velocidad, motorEncendido) {
+    if (velocidad >= VELOCIDAD_MOVIMIENTO) {
+        cancelarApagadoPorVelocidad(imei);
+        if (motorEncendido) return;
+        const ahora = Date.now();
+        const primero = primerReporteEnMovimiento.get(imei);
+        if (primero === undefined) {
+            primerReporteEnMovimiento.set(imei, ahora);
+        } else if (ahora - primero >= SEGUNDOS_MIN_ENTRE_REPORTES_ENCENDIDO * 1000) {
+            primerReporteEnMovimiento.delete(imei);
+            await cambiarEstadoMotor(ownerId, imei, ficha, true);
+        }
+        return;
+    }
+
+    // Un reporte por debajo de 10 rompe la racha de "en movimiento"
+    primerReporteEnMovimiento.delete(imei);
+    if (velocidad < VELOCIDAD_DETENIDO && motorEncendido) {
+        programarApagadoPorVelocidad(ownerId, imei, ficha);
+    }
+}
+
+// Al arrancar el servidor no hay timers: los camiones que quedaron "encendidos"
+// y parados se apagarian solo con su proximo reporte, y si el tracker ya no
+// reporta nunca pasaria. Se programa el apagado para los que estan detenidos.
+async function reanudarApagadosPendientes() {
+    try {
+        const resultado = await pool.query(
+            'SELECT owner_id, imei, ficha FROM camiones WHERE motor_encendido = true AND COALESCE(velocidad, 0) < $1',
+            [VELOCIDAD_DETENIDO]
+        );
+        for (const fila of resultado.rows) {
+            programarApagadoPorVelocidad(fila.owner_id, fila.imei, fila.ficha);
+        }
+    } catch (error) {
+        console.log(`❌ Error reanudando apagados pendientes: ${error.message}`);
+    }
+}
 
 // El GPS no tiene odometro: el kilometraje se calcula solo, sumando la
 // distancia (Haversine) entre cada par de coordenadas consecutivas que
@@ -595,7 +713,7 @@ async function actualizarYNotificar(imei, latitud, longitud, velocidad, rumbo = 
             `UPDATE camiones
              SET latitud = $1, longitud = $2, velocidad = $3, ultima_actualizacion = NOW(), kilometraje = kilometraje + $4
              WHERE imei = $5
-             RETURNING owner_id, ficha, ultima_actualizacion, kilometraje, kilometraje_ultimo_cambio, intervalo_cambio_aceite`,
+             RETURNING owner_id, ficha, ultima_actualizacion, kilometraje, kilometraje_ultimo_cambio, intervalo_cambio_aceite, motor_encendido`,
             [latitud, longitud, velocidad, deltaKm, imei]
         );
 
@@ -613,13 +731,18 @@ async function actualizarYNotificar(imei, latitud, longitud, velocidad, rumbo = 
                 kilometraje,
                 kilometraje_ultimo_cambio: kilometrajeUltimoCambio,
                 intervalo_cambio_aceite: intervaloCambioAceite,
+                motor_encendido: motorEncendido,
             } = resultadoCamion.rows[0];
             io.to(ownerId).emit(`camion_${imei}`, { imei, latitud, longitud, velocidad, rumbo, ultima_actualizacion: ultimaActualizacion });
             console.log(`💾 Ubicación actualizada y enviada a la sala de "${ownerId}"`);
 
-            const velocidadAnterior = ultimaVelocidadConocida.get(imei) ?? 0;
-            ultimaVelocidadConocida.set(imei, velocidad);
-            if (velocidadAnterior <= VELOCIDAD_MAX_PERMITIDA && velocidad > VELOCIDAD_MAX_PERMITIDA) {
+            const velocidadNum = Number(velocidad) || 0;
+            await evaluarMotorPorVelocidad(ownerId, imei, ficha, velocidadNum, !!motorEncendido);
+
+            if (excesoVelocidadActivo.has(imei)) {
+                if (velocidadNum < VELOCIDAD_REARME_ALERTA) excesoVelocidadActivo.delete(imei);
+            } else if (velocidadNum > VELOCIDAD_MAX_PERMITIDA) {
+                excesoVelocidadActivo.add(imei);
                 await dispararAlerta(
                     ownerId,
                     imei,
@@ -948,7 +1071,7 @@ const tcpServerGT06 = net.createServer((socket) => {
                 // MASCARA_BIT_ACC contra hardware real.
                 console.log(`📟 [GT06] Estado (0x13) de IMEI ${imeiDeEstaConexion}, cuerpo hex: ${paquete.cuerpoHex}`);
                 socket.write(paquete.respuesta);
-                if (imeiDeEstaConexion) {
+                if (imeiDeEstaConexion && DETECTAR_IGNICION_POR_CABLE) {
                     await procesarCambioDeIgnicion(imeiDeEstaConexion, paquete.cuerpoHex);
                 }
             }
@@ -975,6 +1098,7 @@ server.listen(3000, () => {
     console.log('🌐 API + WEBSOCKETS SEGUROS [Puerto 3000]');
 });
 
+reanudarApagadosPendientes();
 limpiarAlertasViejas();
 setInterval(limpiarAlertasViejas, RETENCION_ALERTAS_INTERVALO_MS);
 

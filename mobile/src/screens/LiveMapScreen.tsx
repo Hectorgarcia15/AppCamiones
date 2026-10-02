@@ -63,6 +63,11 @@ export default function LiveMapScreen() {
     const [ultimaActualizacion, setUltimaActualizacion] = useState<string | null>(camionParam?.ultima_actualizacion || null);
     const [apagando, setApagando] = useState(false);
     const [bloqueado, setBloqueado] = useState<boolean>(!!camionParam?.bloqueado_remoto);
+    // Ultimo estado del motor que detecto el servidor (por velocidad mientras
+    // no este conectado el cable de ignicion). null = todavia no se sabe
+    const [motorEncendido, setMotorEncendido] = useState<boolean | null>(
+        typeof camionParam?.motor_encendido === 'boolean' ? camionParam.motor_encendido : null
+    );
     const [direccion, setDireccion] = useState<string | null>(null);
     const [buscandoDireccion, setBuscandoDireccion] = useState(false);
     // Estela del recorrido: solo con las ubicaciones que llegan en vivo mientras
@@ -131,6 +136,9 @@ export default function LiveMapScreen() {
             if (typeof datos.bloqueado_remoto === 'boolean') {
                 setBloqueado(datos.bloqueado_remoto);
             }
+            if (typeof datos.motor_encendido === 'boolean') {
+                setMotorEncendido(datos.motor_encendido);
+            }
             // Si mientras tanto llego algo mas nuevo por el socket, no se pisa
             const actual = ultimaActualizacionRef.current ? new Date(ultimaActualizacionRef.current).getTime() : 0;
             const recibida = datos.ultima_actualizacion ? new Date(datos.ultima_actualizacion).getTime() : 0;
@@ -167,9 +175,18 @@ export default function LiveMapScreen() {
 
         socket.on(eventoSocket, manejarActualizacion);
 
+        // El servidor avisa los cambios de motor como alertas 'encendido'/'apagado'
+        const manejarAlerta = (alerta: { imei?: string; tipo?: string }) => {
+            if (alerta?.imei !== imei) return;
+            if (alerta.tipo === 'encendido') setMotorEncendido(true);
+            else if (alerta.tipo === 'apagado') setMotorEncendido(false);
+        };
+        socket.on('alerta', manejarAlerta);
+
         return () => {
             // Solo quita el listener de ESTE camion, nada mas
             socket.off(eventoSocket, manejarActualizacion);
+            socket.off('alerta', manejarAlerta);
         };
     }, [imei, user?.token, manejarActualizacion]);
 
@@ -350,6 +367,13 @@ export default function LiveMapScreen() {
                 )}
                 <View style={styles.infoBox}>
                     <Text style={styles.truckName}>{nombreCamion}</Text>
+                    {motorEncendido !== null && (
+                        <View style={[styles.motorPill, motorEncendido ? styles.motorPillEncendido : styles.motorPillApagado]}>
+                            <Text style={[styles.motorPillText, motorEncendido ? styles.motorTextEncendido : styles.motorTextApagado]}>
+                                {motorEncendido ? '● Motor encendido' : '● Motor apagado'}
+                            </Text>
+                        </View>
+                    )}
                     {tieneSenal && (direccion || buscandoDireccion) && (
                         <Text style={styles.direccionText}>
                             📍 {direccion || 'Buscando dirección...'}
@@ -468,6 +492,31 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         borderWidth: 1,
         borderColor: '#0b54f3',
+    },
+    motorPill: {
+        paddingVertical: 2,
+        paddingHorizontal: 10,
+        borderRadius: 10,
+        borderWidth: 1,
+        marginVertical: 2,
+    },
+    motorPillEncendido: {
+        backgroundColor: 'rgba(34, 197, 94, 0.15)',
+        borderColor: '#22c55e',
+    },
+    motorPillApagado: {
+        backgroundColor: 'rgba(148, 163, 184, 0.15)',
+        borderColor: '#64748b',
+    },
+    motorPillText: {
+        fontWeight: 'bold',
+        fontSize: 13,
+    },
+    motorTextEncendido: {
+        color: '#4ade80',
+    },
+    motorTextApagado: {
+        color: '#cbd5e1',
     },
     truckName: {
         color: '#9cbbfe',
