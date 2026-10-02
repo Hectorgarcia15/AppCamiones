@@ -1,9 +1,9 @@
 ﻿import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, Alert } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, Alert, AppState } from 'react-native';
 import MapView, { MarkerAnimated, AnimatedRegion, Polyline, Camera } from 'react-native-maps';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { useAuth, API_BASE_URL } from '../context/AuthContext';
-import { socketService } from '../services/socketService';
+import { socketService, useEstadoConexion } from '../services/socketService';
 import { formatearUltimaSenal } from '../utils/formatearUltimaSenal';
 import { obtenerDireccion, distanciaMetros } from '../utils/obtenerDireccion';
 
@@ -29,10 +29,14 @@ const VELOCIDAD_MIN_PARA_RUMBO = 5;
 // nueva, en vez de saltar de golpe
 const MS_ANIMACION_MOVIMIENTO = 1000;
 
+// Cada cuanto se redibuja el texto de "Última señal" para que avance solo
+const MS_REFRESCO_ULTIMA_SENAL = 10000;
+
 export default function LiveMapScreen() {
     const route = useRoute<any>();
     const navigation = useNavigation<any>();
     const { user } = useAuth();
+    const estadoConexion = useEstadoConexion();
 
     const camionParam = route?.params?.camion;
     const imei = camionParam?.imei || '352812345678901';
@@ -70,6 +74,11 @@ export default function LiveMapScreen() {
     const ultimoRumbo = useRef<number | null>(null);
     const mapRef = useRef<MapView>(null);
     const ultimaConsultaDireccion = useRef<{ latitud: number; longitud: number; tiempo: number } | null>(null);
+    // Copia de ultimaActualizacion legible desde callbacks sin re-crearlos
+    const ultimaActualizacionRef = useRef<string | null>(ultimaActualizacion);
+    ultimaActualizacionRef.current = ultimaActualizacion;
+    // Solo sirve para forzar el redibujado periodico de "Última señal"
+    const [, setTick] = useState(0);
 
     // Handler nombrado, para poder quitar exactamente ESTE listener al salir
     const manejarActualizacion = useCallback((datos: any) => {
@@ -107,6 +116,45 @@ export default function LiveMapScreen() {
             setUltimaActualizacion(datos.ultima_actualizacion || new Date().toISOString());
         }
     }, [nombreCamion, posicionMarcador]);
+
+    // Pide al servidor la ultima ubicacion guardada. Se usa al reconectar el
+    // socket y al volver a primer plano, porque los reportes que llegaron
+    // mientras no habia conexion no se reenvian por el socket
+    const resincronizarUbicacion = useCallback(async () => {
+        if (!user?.token) return;
+        try {
+            const res = await fetch(`${API_BASE_URL}/api/camion/${imei}`, {
+                headers: { Authorization: `Bearer ${user.token}` },
+            });
+            if (!res.ok) return;
+            const datos = await res.json();
+            if (typeof datos.bloqueado_remoto === 'boolean') {
+                setBloqueado(datos.bloqueado_remoto);
+            }
+            // Si mientras tanto llego algo mas nuevo por el socket, no se pisa
+            const actual = ultimaActualizacionRef.current ? new Date(ultimaActualizacionRef.current).getTime() : 0;
+            const recibida = datos.ultima_actualizacion ? new Date(datos.ultima_actualizacion).getTime() : 0;
+            if (!recibida || recibida <= actual) return;
+            // Postgres puede devolver numeric como texto
+            manejarActualizacion({ ...datos, velocidad: Number(datos.velocidad) || 0 });
+        } catch (error) {
+            console.log('No se pudo resincronizar la ubicacion:', error);
+        }
+    }, [imei, user?.token, manejarActualizacion]);
+
+    useEffect(() => socketService.suscribirReconexion(resincronizarUbicacion), [resincronizarUbicacion]);
+
+    useEffect(() => {
+        const suscripcion = AppState.addEventListener('change', (estadoApp) => {
+            if (estadoApp === 'active') resincronizarUbicacion();
+        });
+        return () => suscripcion.remove();
+    }, [resincronizarUbicacion]);
+
+    useEffect(() => {
+        const intervalo = setInterval(() => setTick((t) => t + 1), MS_REFRESCO_ULTIMA_SENAL);
+        return () => clearInterval(intervalo);
+    }, []);
 
     useEffect(() => {
         if (!user?.token) return;
@@ -293,6 +341,13 @@ export default function LiveMapScreen() {
             )}
 
             <View style={styles.bottomContainer}>
+                {estadoConexion !== 'conectado' && (
+                    <View style={styles.bannerSinConexion}>
+                        <Text style={styles.bannerSinConexionText}>
+                            {estadoConexion === 'reconectando' ? 'Sin conexión — reconectando…' : 'Sin conexión'}
+                        </Text>
+                    </View>
+                )}
                 <View style={styles.infoBox}>
                     <Text style={styles.truckName}>{nombreCamion}</Text>
                     {tieneSenal && (direccion || buscandoDireccion) && (
@@ -389,6 +444,21 @@ const styles = StyleSheet.create({
         bottom: 40,
         left: 20,
         right: 20,
+    },
+    bannerSinConexion: {
+        backgroundColor: 'rgba(127, 29, 29, 0.95)',
+        paddingVertical: 6,
+        paddingHorizontal: 12,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: '#ef4444',
+        alignItems: 'center',
+        marginBottom: 8,
+    },
+    bannerSinConexionText: {
+        color: '#fecaca',
+        fontWeight: 'bold',
+        fontSize: 13,
     },
     infoBox: {
         backgroundColor: 'rgba(15, 23, 42, 0.95)',

@@ -58,6 +58,38 @@ app.get('/api/mis-camiones', verificarToken, async (req, res) => {
     }
 });
 
+// Ultima ubicacion guardada de un camion. La app la pide al reconectar el
+// socket, para no quedarse con una posicion vieja si se perdieron reportes
+// mientras estaba sin conexion.
+app.get('/api/camion/:imei', verificarToken, async (req, res) => {
+    try {
+        const resultado = await pool.query(
+            `SELECT owner_id, imei, latitud, longitud, velocidad, ultima_actualizacion, bloqueado_remoto
+             FROM camiones WHERE imei = $1`,
+            [req.params.imei]
+        );
+        if (resultado.rows.length === 0) {
+            return res.status(404).json({ error: 'Camion no encontrado' });
+        }
+
+        const fila = resultado.rows[0];
+        if (fila.owner_id !== req.dueno.owner_id) {
+            return res.status(403).json({ error: 'Este vehículo no te pertenece' });
+        }
+
+        res.json({
+            imei: fila.imei,
+            latitud: fila.latitud,
+            longitud: fila.longitud,
+            velocidad: fila.velocidad,
+            ultima_actualizacion: fila.ultima_actualizacion,
+            bloqueado_remoto: fila.bloqueado_remoto,
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Error obteniendo la ubicacion del camion' });
+    }
+});
+
 // Estado de mantenimiento (aceite) y seguro de un camion, calculado en el
 // momento con las mismas funciones que usan las alertas automaticas.
 app.get('/api/camion/:imei/estado-mantenimiento', verificarToken, async (req, res) => {

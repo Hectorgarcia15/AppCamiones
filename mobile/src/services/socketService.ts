@@ -8,13 +8,27 @@
  * para que siga recibiendo las ubicaciones y alertas del dueno.
  */
 
+import { useSyncExternalStore } from 'react';
+import { AppState, AppStateStatus, NativeEventSubscription } from 'react-native';
 import { io, Socket } from 'socket.io-client';
 import { API_BASE_URL } from '../context/AuthContext';
+
+// conectado: hay conexion viva con el servidor
+// reconectando: se perdio la conexion y socket.io esta reintentando solo
+// desconectado: no hay socket (sin sesion o despues de logout)
+export type EstadoConexion = 'conectado' | 'reconectando' | 'desconectado';
 
 class SocketService {
   private socket: Socket | null = null;
   private autenticado = false;
   private token: string | null = null;
+  private estado: EstadoConexion = 'desconectado';
+  private oyentesEstado = new Set<() => void>();
+  private oyentesReconexion = new Set<() => void>();
+  // Distingue la primera conexion de las reconexiones: solo en estas hay que
+  // resincronizar, porque pudieron perderse ubicaciones mientras no habia socket
+  private yaConectoAntes = false;
+  private suscripcionAppState: NativeEventSubscription | null = null;
 
   conectar(token: string) {
     this.token = token;
@@ -37,12 +51,18 @@ class SocketService {
         // moviles inestables; ir directo a websocket reconecta mas rapido.
         transports: ['websocket'],
       });
+      this.cambiarEstado('reconectando');
 
       // Se dispara en la primera conexion y en cada reconexion automatica
       this.socket.on('connect', () => {
         if (this.token) {
           this.socket?.emit('autenticar', this.token);
         }
+        this.cambiarEstado('conectado');
+        if (this.yaConectoAntes) {
+          this.oyentesReconexion.forEach((oyente) => oyente());
+        }
+        this.yaConectoAntes = true;
       });
 
       this.socket.on('disconnect', (razon) => {
@@ -53,6 +73,13 @@ class SocketService {
         if (razon === 'io server disconnect' && this.token) {
           this.socket?.connect();
         }
+        this.cambiarEstado(this.token ? 'reconectando' : 'desconectado');
+      });
+
+      // Falla del primer intento de conexion (servidor caido, sin internet):
+      // socket.io sigue reintentando, asi que se muestra como reconectando
+      this.socket.on('connect_error', () => {
+        if (this.token) this.cambiarEstado('reconectando');
       });
 
       this.socket.io.on('reconnect_attempt', (intento) => {
@@ -68,6 +95,11 @@ class SocketService {
         console.log(respuesta.ok ? '🔑 Autenticado en el servidor' : '❌ Token rechazado');
       });
 
+      // Al volver a primer plano el socket pudo haber muerto en segundo plano
+      // (Android suspende la red) y el backoff puede tener hasta 10 s de espera:
+      // se fuerza el reintento de una vez
+      this.suscripcionAppState = AppState.addEventListener('change', this.manejarAppState);
+
       return this.socket;
     }
 
@@ -81,6 +113,49 @@ class SocketService {
     return this.socket;
   }
 
+  private manejarAppState = (estadoApp: AppStateStatus) => {
+    if (estadoApp === 'active') {
+      this.reconectarSiHaceFalta();
+    }
+  };
+
+  reconectarSiHaceFalta() {
+    if (this.socket && this.token && !this.socket.connected) {
+      console.log('📱 App en primer plano: forzando reconexion del socket');
+      // Mientras socket.io espera el backoff, connect() solo no hace nada:
+      // primero se corta el ciclo de reintentos (no emite 'disconnect' porque
+      // ya no estaba conectado) y luego se abre una conexion nueva al momento
+      this.socket.disconnect();
+      this.socket.connect();
+    }
+  }
+
+  private cambiarEstado(nuevo: EstadoConexion) {
+    if (this.estado === nuevo) return;
+    this.estado = nuevo;
+    this.oyentesEstado.forEach((oyente) => oyente());
+  }
+
+  getEstado(): EstadoConexion {
+    return this.estado;
+  }
+
+  // Devuelve la funcion para dejar de escuchar
+  suscribirEstado(oyente: () => void): () => void {
+    this.oyentesEstado.add(oyente);
+    return () => {
+      this.oyentesEstado.delete(oyente);
+    };
+  }
+
+  // Se llama en cada reconexion (no en la primera conexion)
+  suscribirReconexion(oyente: () => void): () => void {
+    this.oyentesReconexion.add(oyente);
+    return () => {
+      this.oyentesReconexion.delete(oyente);
+    };
+  }
+
   getSocket(): Socket | null {
     return this.socket;
   }
@@ -90,11 +165,24 @@ class SocketService {
   }
 
   desconectar() {
+    // El token se borra antes para que el 'disconnect' no lo tome como caida
+    this.token = null;
+    this.suscripcionAppState?.remove();
+    this.suscripcionAppState = null;
     this.socket?.disconnect();
     this.socket = null;
     this.autenticado = false;
-    this.token = null;
+    this.yaConectoAntes = false;
+    this.cambiarEstado('desconectado');
   }
 }
 
 export const socketService = new SocketService();
+
+// Estado de la conexion en vivo para mostrarlo en pantalla
+export function useEstadoConexion(): EstadoConexion {
+  return useSyncExternalStore(
+    (oyente) => socketService.suscribirEstado(oyente),
+    () => socketService.getEstado(),
+  );
+}
