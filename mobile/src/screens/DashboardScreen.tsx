@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -9,8 +9,9 @@ import {
   Alert,
   Image,
   TextInput,
+  AppState,
 } from "react-native";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import { useAuth, Camion } from "../context/AuthContext";
 import { formatearUltimaSenal } from "../utils/formatearUltimaSenal";
 
@@ -38,6 +39,20 @@ export default function DashboardScreen() {
     const intervalo = setInterval(() => forzarActualizacionReloj((t) => t + 1), 30000);
     return () => clearInterval(intervalo);
   }, []);
+
+  // La lista se vuelve a pedir al servidor cada vez que se entra a esta
+  // pantalla y cada vez que la app vuelve a primer plano estando aqui: Android
+  // deja la app en memoria por dias y, sin esto, mostraria una lista vieja
+  // (ej. camiones ya borrados) hasta que alguien la arrastrara hacia abajo
+  useFocusEffect(
+    useCallback(() => {
+      refreshTrucks();
+      const suscripcion = AppState.addEventListener("change", (estado) => {
+        if (estado === "active") refreshTrucks();
+      });
+      return () => suscripcion.remove();
+    }, [refreshTrucks])
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -88,7 +103,13 @@ export default function DashboardScreen() {
           </Text>
         </View>
 
-        <View style={{ width: 40 }} />
+        <TouchableOpacity
+          onPress={() => navigation.navigate("Profile")}
+          style={styles.homeButton}
+          accessibilityLabel="Perfil y cerrar sesión"
+        >
+          <Text style={styles.homeButtonText}>👤</Text>
+        </TouchableOpacity>
       </View>
 
       <Text style={styles.instructionText}>TOCA UNA FICHA PARA VER EN TIEMPO REAL</Text>

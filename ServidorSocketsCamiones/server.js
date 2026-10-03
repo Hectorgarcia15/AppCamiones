@@ -35,6 +35,13 @@ async function verificarToken(req, res, next) {
         if (resultado.rows.length === 0) {
             return res.status(401).json({ error: 'Token invalido' });
         }
+        // Un codigo que coincide con mas de una cuenta (solo distinto en
+        // mayusculas) se rechaza: elegir cualquiera mostraria datos de otro
+        // dueño. El indice unico de migracion_token_unico.sql lo impide de raiz
+        if (resultado.rows.length > 1) {
+            console.log(`⚠️ Codigo ambiguo rechazado (REST): coincide con ${resultado.rows.length} cuentas: ${resultado.rows.map((f) => f.owner_id).join(', ')}`);
+            return res.status(401).json({ error: 'Codigo de acceso ambiguo, contacta al administrador' });
+        }
         req.dueno = resultado.rows[0];
         next();
     } catch (error) {
@@ -130,6 +137,16 @@ app.post('/api/registrar-push-token', verificarToken, async (req, res) => {
         return res.status(400).json({ error: 'Falta el token de push' });
     }
     try {
+        // Un telefono pertenece a una sola cuenta a la vez: si antes estuvo
+        // registrado en otra (entro con otro codigo), se quita de alla para que
+        // no siga recibiendo las alertas de esa cuenta
+        const anteriores = await pool.query(
+            'DELETE FROM push_tokens WHERE token = $1 AND owner_id <> $2',
+            [token, req.dueno.owner_id]
+        );
+        if (anteriores.rowCount > 0) {
+            console.log(`🔔 Telefono movido a la cuenta "${req.dueno.owner_id}": quitado de ${anteriores.rowCount} cuenta(s) anterior(es)`);
+        }
         await pool.query(
             `INSERT INTO push_tokens (owner_id, token, updated_at)
              VALUES ($1, $2, NOW())
@@ -139,6 +156,24 @@ app.post('/api/registrar-push-token', verificarToken, async (req, res) => {
         res.json({ ok: true });
     } catch (error) {
         res.status(500).json({ error: 'Error guardando el token de push' });
+    }
+});
+
+// La app lo llama al cerrar sesion: ese telefono deja de recibir los push de
+// esta cuenta
+app.post('/api/eliminar-push-token', verificarToken, async (req, res) => {
+    const { token } = req.body || {};
+    if (!token) {
+        return res.status(400).json({ error: 'Falta el token de push' });
+    }
+    try {
+        const resultado = await pool.query(
+            'DELETE FROM push_tokens WHERE owner_id = $1 AND token = $2',
+            [req.dueno.owner_id, token]
+        );
+        res.json({ ok: true, eliminados: resultado.rowCount });
+    } catch (error) {
+        res.status(500).json({ error: 'Error eliminando el token de push' });
     }
 });
 
@@ -965,7 +1000,11 @@ io.on('connection', (socket) => {
                 'SELECT owner_id FROM duenos WHERE LOWER(token) = LOWER($1) AND activo = true',
                 [token]
             );
-            if (resultado.rows.length > 0) {
+            if (resultado.rows.length > 1) {
+                // Igual que verificarToken: un codigo ambiguo no entra a ninguna sala
+                console.log(`⚠️ Codigo ambiguo rechazado (socket): coincide con ${resultado.rows.length} cuentas: ${resultado.rows.map((f) => f.owner_id).join(', ')}`);
+                socket.emit('autenticado', { ok: false });
+            } else if (resultado.rows.length === 1) {
                 const ownerId = resultado.rows[0].owner_id;
                 socket.join(ownerId);
                 socket.emit('autenticado', { ok: true });

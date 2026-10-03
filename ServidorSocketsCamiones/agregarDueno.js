@@ -17,15 +17,17 @@ async function generarCodigoUnico(nombre) {
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, ''); // quita acentos (ej: JOSÉ -> JOSE)
 
+    // Sin distinguir mayusculas: el login compara asi, entonces "juan01" y
+    // "JUAN01" serian el mismo codigo
     const resultado = await pool.query(
-        'SELECT token FROM duenos WHERE token LIKE $1',
+        'SELECT token FROM duenos WHERE UPPER(token) LIKE $1',
         [primerNombre + '%']
     );
 
     // Busca el numero mas alto ya usado para ese nombre
     let maxNumero = 0;
     for (const fila of resultado.rows) {
-        const match = fila.token.match(new RegExp('^' + primerNombre + '(\\d+)$'));
+        const match = fila.token.match(new RegExp('^' + primerNombre + '(\\d+)$', 'i'));
         if (match) {
             const numero = parseInt(match[1], 10);
             if (numero > maxNumero) maxNumero = numero;
@@ -51,6 +53,10 @@ async function agregarDueno(nombre) {
         console.log('   Código de acceso: ' + token);
         console.log('\nDale este código al cliente, lo va a escribir en la app la primera vez que la abra.\n');
     } catch (error) {
+        if (error.code === '23505') {
+            // Lo rechazo el indice unico de migracion_token_unico.sql (o owner_id repetido)
+            console.log('❌ Ya existe un dueño con ese código de acceso u owner_id. Corre el script de nuevo o revisa la tabla duenos.');
+        }
         console.log('❌ Error creando dueño:', error.message);
     } finally {
         await pool.end();

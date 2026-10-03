@@ -1,7 +1,7 @@
-﻿import React, { createContext, ReactNode, useContext, useState, useEffect } from "react";
+﻿import React, { createContext, ReactNode, useContext, useState, useEffect, useCallback, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { socketService } from "../services/socketService";
-import { registrarPushToken } from "../services/pushNotificationService";
+import { registrarPushToken, desregistrarPushToken } from "../services/pushNotificationService";
 
 // Direccion de tu servidor (por ahora tu IP local, luego sera tu dominio real)
 export const API_BASE_URL = "http://137.184.48.248:3000";
@@ -41,7 +41,12 @@ interface AuthContextData {
   loginWithCode: (code: string) => Promise<boolean>;
   logout: () => Promise<void>;
   refreshTrucks: () => Promise<void>;
+  // Cuando se trajo del servidor la lista de camiones por ultima vez (diagnostico)
+  ultimaCargaCamiones: Date | null;
 }
+
+// Tiempo maximo que el cierre de sesion espera a que el servidor borre el push
+const MS_MAX_ESPERA_LOGOUT = 5000;
 
 const AuthContext = createContext<AuthContextData | undefined>(undefined);
 
@@ -49,6 +54,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [trucks, setTrucks] = useState<Camion[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [ultimaCargaCamiones, setUltimaCargaCamiones] = useState<Date | null>(null);
+  // Token de la sesion actual, legible desde callbacks estables
+  const tokenActual = useRef<string | null>(null);
 
   const cargarDatos = async (token: string) => {
     try {
@@ -57,6 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       if (!perfilRes.ok) throw new Error("Token invalido");
       const perfil = await perfilRes.json();
+      tokenActual.current = token;
       setUser({ ownerId: perfil.ownerId, name: perfil.nombre, token });
 
       // Conectar el socket UNA sola vez aqui (no en cada pantalla) para que las
@@ -70,8 +79,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       const camionesData = await camionesRes.json();
       setTrucks(camionesData);
+      setUltimaCargaCamiones(new Date());
     } catch (e) {
       console.log("Error cargando datos del dueño:", e);
+      tokenActual.current = null;
       setUser(null);
       setTrucks([]);
     }
@@ -110,19 +121,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
+    const token = tokenActual.current;
+    tokenActual.current = null;
+    // Primero se quita este telefono de los push de la cuenta (con tope de
+    // tiempo: sin red no debe trabar el cierre de sesion)
+    if (token) {
+      await Promise.race([
+        desregistrarPushToken(token),
+        new Promise((resolve) => setTimeout(resolve, MS_MAX_ESPERA_LOGOUT)),
+      ]);
+    }
     await AsyncStorage.removeItem("@owner_token");
     socketService.desconectar();
     setUser(null);
     setTrucks([]);
-  };
+    setUltimaCargaCamiones(null);
+  }, []);
 
-  const refreshTrucks = async () => {
-    if (user) await cargarDatos(user.token);
-  };
+  // Refresco liviano de la lista (al entrar al dashboard o volver a la app):
+  // solo pide los camiones, sin reconectar el socket ni volver a registrar el
+  // push. Si falla la red se conserva la lista actual; si el servidor ya no
+  // acepta el codigo (ej. se lo cambiaron al dueño), se cierra la sesion
+  const refreshTrucks = useCallback(async () => {
+    const token = tokenActual.current;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/mis-camiones`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        await logout();
+        return;
+      }
+      if (!res.ok) return;
+      const camionesData = await res.json();
+      if (tokenActual.current !== token) return;   // cambio la sesion mientras tanto
+      setTrucks(camionesData);
+      setUltimaCargaCamiones(new Date());
+    } catch (e) {
+      console.log("Error refrescando camiones:", e);
+    }
+  }, [logout]);
 
   return (
-    <AuthContext.Provider value={{ user, trucks, loading, loginWithCode, logout, refreshTrucks }}>
+    <AuthContext.Provider value={{ user, trucks, loading, loginWithCode, logout, refreshTrucks, ultimaCargaCamiones }}>
       {children}
     </AuthContext.Provider>
   );
