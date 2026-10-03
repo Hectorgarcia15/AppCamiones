@@ -612,9 +612,54 @@ const MS_DETENIDO_PARA_APAGADO = 3 * 60 * 1000;
 
 const timersApagadoPorVelocidad = new Map(); // imei -> timeoutId
 
+// ==================== IGNICION REAL POR CABLE (tracker HQ / ACCURATE) ====================
+// El ultimo campo de las tramas V1 del protocolo HQ es un estado de 32 bits en
+// hex (ej. "FFFFFBFF"). Segun la documentacion del protocolo (decodificador
+// H02 de Traccar) el bit 10 es la ignicion (ACC), 1 = encendido. La polaridad
+// puede variar entre clones: se confirma con el equipo real comparando el log
+// "🔑 [HQ] Bit de ignicion..." al poner y quitar la llave, y se ajusta aqui.
+const BIT_IGNICION_HQ = 10;
+const IGNICION_HQ_ENCENDIDA_SI_BIT = 1;
+// IMEIs HQ que ya tienen el cable de ignicion conectado y confirmado. Para esos
+// vehiculos el encendido/apagado sale del cable (inmediato y exacto) y la
+// aproximacion por velocidad se desactiva, para no duplicar avisos. Vacio =
+// desactivado: el bit solo se registra en el log para poder confirmarlo.
+const IMEIS_IGNICION_POR_CABLE = new Set([]);
+
+const ultimoBitIgnicionHQ = new Map(); // imei -> 0/1 (solo para el log de cambios)
+
+// Devuelve { estadoHex, bitIgnicion, ignicion } o null si el campo no viene o no es hex
+function leerEstadoHQ(campo) {
+    if (!campo || !/^[0-9A-Fa-f]{8}$/.test(campo)) return null;
+    const estado = parseInt(campo, 16);
+    const bitIgnicion = (estado >>> BIT_IGNICION_HQ) & 1;
+    return { estadoHex: campo.toUpperCase(), bitIgnicion, ignicion: bitIgnicion === IGNICION_HQ_ENCENDIDA_SI_BIT };
+}
+
+async function procesarIgnicionHQ(imei, estadoHQ) {
+    if (!estadoHQ) return;
+    const anterior = ultimoBitIgnicionHQ.get(imei);
+    ultimoBitIgnicionHQ.set(imei, estadoHQ.bitIgnicion);
+    if (anterior !== undefined && anterior !== estadoHQ.bitIgnicion) {
+        console.log(`🔑 [HQ] Bit de ignicion de IMEI ${imei} cambio: ${anterior} -> ${estadoHQ.bitIgnicion} (estado ${estadoHQ.estadoHex})`);
+    }
+    if (!IMEIS_IGNICION_POR_CABLE.has(imei)) return;
+
+    try {
+        const resultado = await pool.query('SELECT owner_id, ficha, motor_encendido FROM camiones WHERE imei = $1', [imei]);
+        if (resultado.rows.length === 0) return;
+        const { owner_id: ownerId, ficha, motor_encendido: motorEncendido } = resultado.rows[0];
+        if (!!motorEncendido !== estadoHQ.ignicion) {
+            await cambiarEstadoMotor(ownerId, imei, ficha, estadoHQ.ignicion);
+        }
+    } catch (error) {
+        console.log(`❌ Error procesando ignicion HQ: ${error.message}`);
+    }
+}
+
 async function cambiarEstadoMotor(ownerId, imei, ficha, encendido) {
     await pool.query('UPDATE camiones SET motor_encendido = $1 WHERE imei = $2', [encendido, imei]);
-    console.log(`🔧 Motor ${encendido ? 'ENCENDIDO' : 'APAGADO'} (por velocidad) en IMEI ${imei}`);
+    console.log(`🔧 Motor ${encendido ? 'ENCENDIDO' : 'APAGADO'} (${IMEIS_IGNICION_POR_CABLE.has(imei) ? 'por cable' : 'por velocidad'}) en IMEI ${imei}`);
     if (encendido) {
         await dispararAlerta(ownerId, imei, 'encendido', `Unidad ${ficha} encendió el motor.`, {});
         iniciarRecordatorioMotor(ownerId, imei, ficha);
@@ -633,6 +678,9 @@ function cancelarApagadoPorVelocidad(imei) {
 }
 
 function programarApagadoPorVelocidad(ownerId, imei, ficha, ms = MS_DETENIDO_PARA_APAGADO) {
+    // Con cable de ignicion el apagado lo dice el cable, no el tiempo detenido
+    // (tambien cubre reanudarApagadosPendientes al arrancar el servidor)
+    if (IMEIS_IGNICION_POR_CABLE.has(imei)) return;
     if (timersApagadoPorVelocidad.has(imei)) return;
     const timeoutId = setTimeout(async () => {
         timersApagadoPorVelocidad.delete(imei);
@@ -764,7 +812,9 @@ async function actualizarYNotificar(imei, latitud, longitud, velocidad, rumbo = 
             console.log(`💾 Ubicación actualizada y enviada a la sala de "${ownerId}"`);
 
             const velocidadNum = Number(velocidad) || 0;
-            await evaluarMotorPorVelocidad(ownerId, imei, ficha, velocidadNum, !!motorEncendido);
+            if (!IMEIS_IGNICION_POR_CABLE.has(imei)) {
+                await evaluarMotorPorVelocidad(ownerId, imei, ficha, velocidadNum, !!motorEncendido);
+            }
 
             if (excesoVelocidadActivo.has(imei)) {
                 if (velocidadNum < VELOCIDAD_REARME_ALERTA) excesoVelocidadActivo.delete(imei);
@@ -851,9 +901,13 @@ function procesarTramaHQ(tramaCruda) {
     if (tipoMensaje === 'HTBT') {
         return { tipo: 'heartbeat', imei };
     }
+    // Estado del vehiculo (ignicion, alarmas): ultimo campo de las tramas V1,
+    // tambien en las que no tienen GPS (ej. dentro de un garaje)
+    const estadoHQ = tipoMensaje === 'V1' ? leerEstadoHQ(partes[12]) : null;
+
     // 'V' = trama de ubicacion pero el GPS todavia no tiene señal (fix) valida
     if (partes[4] === 'V') {
-        return { tipo: 'sin_senal', imei, tipoMensaje };
+        return { tipo: 'sin_senal', imei, tipoMensaje, estadoHQ };
     }
     if (partes[4] !== 'A') {
         return { tipo: 'desconocido', imei, tipoMensaje };
@@ -875,6 +929,7 @@ function procesarTramaHQ(tramaCruda) {
         longitud: longitud,
         velocidad: Math.round(velocidad),
         rumbo: Number.isFinite(rumbo) ? rumbo : null,
+        estadoHQ,
         fecha_reporte: new Date()
     };
 }
@@ -1060,6 +1115,7 @@ const tcpServerHQ = net.createServer((socket) => {
             if (datosCamion.tipo === 'ubicacion') {
                 console.log(`\n⚡ [HQ] Camión IMEI: ${datosCamion.imei}`);
                 await actualizarYNotificar(datosCamion.imei, datosCamion.latitud, datosCamion.longitud, datosCamion.velocidad, datosCamion.rumbo);
+                await procesarIgnicionHQ(datosCamion.imei, datosCamion.estadoHQ);
             } else if (datosCamion.tipo === 'heartbeat') {
                 // Sin ubicacion: no tocamos la BD ni avisamos a la app. Le devolvemos
                 // el mismo heartbeat como ACK (formato no confirmado con el fabricante).
@@ -1069,6 +1125,7 @@ const tcpServerHQ = net.createServer((socket) => {
                 console.log(`↩️ [HQ] ACK enviado a IMEI ${datosCamion.imei}: ${ack}`);
             } else if (datosCamion.tipo === 'sin_senal') {
                 console.log(`📡 [HQ] ${datosCamion.tipoMensaje} sin señal GPS (V) de IMEI ${datosCamion.imei}`);
+                await procesarIgnicionHQ(datosCamion.imei, datosCamion.estadoHQ);
             } else {
                 console.log(`❔ [HQ] Tipo de mensaje no reconocido "${datosCamion.tipoMensaje}" de IMEI ${datosCamion.imei}`);
             }

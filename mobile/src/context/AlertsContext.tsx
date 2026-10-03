@@ -179,7 +179,7 @@ export const AlertProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         message = "¡ALERTA CRÍTICA! Camión fuera de ruta asignada.";
         break;
       case 'velocidad':
-        message = "¡ALERTA DE VELOCIDAD! Unidad excedió los 80 KPH.";
+        message = "¡ALERTA DE VELOCIDAD! Unidad excedió los 75 KPH.";
         break;
       case 'aceite':
         message = kmFaltantes === 0
