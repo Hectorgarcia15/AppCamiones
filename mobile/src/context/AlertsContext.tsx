@@ -149,6 +149,16 @@ export const AlertProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return;
       }
 
+      // Encendido y apagado del motor: solo la notificacion push del sistema
+      // (el letrerito "🔧 Motor encendido/apagado" con el sonido de 5 pines del
+      // canal 'alertas-pin5'), que tambien se muestra con la app abierta. Sin el
+      // banner propio con "Apagar Alarma" ni el beep de la app, que se mezclaba
+      // con los pines del push. (El indicador de motor de LiveMap escucha este
+      // mismo evento por su cuenta y no se afecta.)
+      if (payload.tipo === 'encendido' || payload.tipo === 'apagado') {
+        return;
+      }
+
       const tipoAlerta = TIPO_SERVIDOR_A_ALERTA[payload.tipo];
       if (tipoAlerta) {
         triggerAlert(tipoAlerta, undefined, payload.mensaje);
