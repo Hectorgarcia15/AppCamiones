@@ -966,8 +966,11 @@ function procesarPaqueteGT06(buffer) {
 io.on('connection', (socket) => {
     socket.on('autenticar', async (token) => {
         try {
+            // Misma comparacion que verificarToken (sin distinguir mayusculas): si
+            // no, un codigo escrito en minusculas entra al dashboard por REST pero
+            // el socket lo rechaza y el mapa en vivo nunca se mueve
             const resultado = await pool.query(
-                'SELECT owner_id FROM duenos WHERE token = $1 AND activo = true',
+                'SELECT owner_id FROM duenos WHERE LOWER(token) = LOWER($1) AND activo = true',
                 [token]
             );
             if (resultado.rows.length > 0) {
