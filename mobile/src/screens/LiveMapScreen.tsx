@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, Alert, AppState } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, Alert, AppState, Animated, Easing } from 'react-native';
 import MapView, { MarkerAnimated, AnimatedRegion, Polyline, Camera } from 'react-native-maps';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { useAuth, API_BASE_URL } from '../context/AuthContext';
@@ -21,9 +21,63 @@ const MAX_PUNTOS_ESTELA = 500;
 
 type Punto = { latitude: number; longitude: number };
 
-// Por debajo de esto el camion esta practicamente parado y el GPS reporta
-// rumbos al azar: se conserva el ultimo rumbo bueno para no hacer girar el mapa
-const VELOCIDAD_MIN_PARA_RUMBO = 5;
+// El rumbo se calcula con las posiciones GPS (no con el que manda el tracker,
+// que no era confiable y no todos los protocolos lo reportan). Solo se
+// recalcula cuando el camion avanzo al menos esto desde el ultimo punto usado:
+// con distancias menores el error del GPS hace girar el mapa al azar
+const METROS_MIN_PARA_RUMBO = 15;
+
+// Rumbo en grados (0 = norte, sentido horario) para ir del punto 1 al 2
+function rumboEntre(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const rad = Math.PI / 180;
+    const dLon = (lon2 - lon1) * rad;
+    const y = Math.sin(dLon) * Math.cos(lat2 * rad);
+    const x = Math.cos(lat1 * rad) * Math.sin(lat2 * rad) - Math.sin(lat1 * rad) * Math.cos(lat2 * rad) * Math.cos(dLon);
+    return (Math.atan2(y, x) / rad + 360) % 360;
+}
+
+// Duracion de un ciclo del pulso del marcador mientras el camion se mueve
+const MS_CICLO_PULSO = 1400;
+// Tiempo extra que el marcador sigue redibujandose al detenerse, para que en
+// Android quede capturado sin el halo (y no congelado a mitad de un pulso)
+const MS_CAPTURA_FINAL_MARCADOR = 600;
+
+// Punto rojo propio del vehiculo. Mientras se mueve, un halo crece y se
+// desvanece en bucle; detenido queda quieto y la animacion no corre
+function MarcadorVehiculo({ enMovimiento }: { enMovimiento: boolean }) {
+    const [progreso] = useState(() => new Animated.Value(0));
+
+    useEffect(() => {
+        if (!enMovimiento) {
+            progreso.setValue(0);
+            return;
+        }
+        // useNativeDriver en false: en Android el marcador se dibuja como imagen
+        // y solo captura los cambios que pasan por JS
+        const bucle = Animated.loop(
+            Animated.timing(progreso, { toValue: 1, duration: MS_CICLO_PULSO, easing: Easing.out(Easing.ease), useNativeDriver: false })
+        );
+        bucle.start();
+        return () => bucle.stop();
+    }, [enMovimiento, progreso]);
+
+    return (
+        <View style={styles.marcador}>
+            {enMovimiento && (
+                <Animated.View
+                    style={[
+                        styles.marcadorHalo,
+                        {
+                            opacity: progreso.interpolate({ inputRange: [0, 1], outputRange: [0.6, 0] }),
+                            transform: [{ scale: progreso.interpolate({ inputRange: [0, 1], outputRange: [1, 2.6] }) }],
+                        },
+                    ]}
+                />
+            )}
+            <View style={styles.marcadorPunto} />
+        </View>
+    );
+}
 
 // Duracion del deslizamiento del marcador y la camara hacia cada ubicacion
 // nueva, en vez de saltar de golpe
@@ -74,9 +128,12 @@ export default function LiveMapScreen() {
     // la pantalla esta abierta. No arranca desde la ultima ubicacion guardada
     // porque puede ser vieja y se dibujaria una linea recta falsa hasta la nueva
     const [estela, setEstela] = useState<Punto[]>([]);
-    // Ultimo rumbo bueno del camion (grados, 0 = norte). El mapa siempre gira
-    // con el; si el protocolo no lo reporta (GT06/Coban) el mapa no gira
+    // Ultimo rumbo calculado (grados, 0 = norte). El mapa siempre gira con el
     const ultimoRumbo = useRef<number | null>(null);
+    // Punto desde el que se mide el proximo rumbo: solo se mueve cuando el
+    // camion avanzo METROS_MIN_PARA_RUMBO. Arranca con la primera ubicacion en
+    // vivo, no con la guardada, que puede ser vieja
+    const puntoBaseRumbo = useRef<{ latitud: number; longitud: number } | null>(null);
     const mapRef = useRef<MapView>(null);
     const ultimaConsultaDireccion = useRef<{ latitud: number; longitud: number; tiempo: number } | null>(null);
     // Copia de ultimaActualizacion legible desde callbacks sin re-crearlos
@@ -106,9 +163,12 @@ export default function LiveMapScreen() {
             posicionMarcador.timing({
                 latitude: latitud, longitude: longitud, duration: MS_ANIMACION_MOVIMIENTO, useNativeDriver: false,
             } as any).start();
-            const rumbo = Number(datos.rumbo);
-            if (datos.rumbo != null && Number.isFinite(rumbo) && (datos.velocidad || 0) >= VELOCIDAD_MIN_PARA_RUMBO) {
-                ultimoRumbo.current = rumbo;
+            const base = puntoBaseRumbo.current;
+            if (!base) {
+                puntoBaseRumbo.current = { latitud, longitud };
+            } else if (distanciaMetros(base.latitud, base.longitud, latitud, longitud) >= METROS_MIN_PARA_RUMBO) {
+                ultimoRumbo.current = rumboEntre(base.latitud, base.longitud, latitud, longitud);
+                puntoBaseRumbo.current = { latitud, longitud };
             }
             // Sigue al camion cambiando el centro y girando el mapa segun su rumbo,
             // sin tocar el zoom del usuario
@@ -212,6 +272,19 @@ export default function LiveMapScreen() {
     }, [camion.latitud, camion.longitud, tieneSenal]);
 
     const camionDetenido = camion.velocidad === 0;
+    const enMovimiento = camion.velocidad > 0;
+
+    // En Android el marcador propio solo se redibuja con tracksViewChanges: se
+    // deja activo mientras se mueve (para el pulso) y un momento al detenerse
+    const [redibujarMarcador, setRedibujarMarcador] = useState(true);
+    useEffect(() => {
+        if (enMovimiento) {
+            setRedibujarMarcador(true);
+            return;
+        }
+        const timeoutId = setTimeout(() => setRedibujarMarcador(false), MS_CAPTURA_FINAL_MARCADOR);
+        return () => clearTimeout(timeoutId);
+    }, [enMovimiento]);
 
     const confirmarApagado = () => {
         Alert.alert(
@@ -311,7 +384,11 @@ export default function LiveMapScreen() {
                     coordinate={posicionMarcador as any}
                     title={nombreCamion}
                     description={direccion ? `${direccion} · ${camion.velocidad} km/h` : `Velocidad: ${camion.velocidad} km/h`}
-                />
+                    anchor={{ x: 0.5, y: 0.5 }}
+                    tracksViewChanges={redibujarMarcador}
+                >
+                    <MarcadorVehiculo enMovimiento={enMovimiento} />
+                </MarkerAnimated>
             </MapView>
 
             <View style={styles.navRow}>
@@ -361,7 +438,9 @@ export default function LiveMapScreen() {
                 {estadoConexion !== 'conectado' && (
                     <View style={styles.bannerSinConexion}>
                         <Text style={styles.bannerSinConexionText}>
-                            {estadoConexion === 'reconectando' ? 'Sin conexión — reconectando…' : 'Sin conexión'}
+                            {estadoConexion === 'token_rechazado'
+                                ? 'El servidor rechazó tu código de acceso: el mapa no se actualizará. Cierra sesión y vuelve a entrar.'
+                                : estadoConexion === 'reconectando' ? 'Sin conexión — reconectando…' : 'Sin conexión'}
                         </Text>
                     </View>
                 )}
@@ -469,6 +548,27 @@ const styles = StyleSheet.create({
         left: 20,
         right: 20,
     },
+    marcador: {
+        width: 48,
+        height: 48,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    marcadorHalo: {
+        position: 'absolute',
+        width: 18,
+        height: 18,
+        borderRadius: 9,
+        backgroundColor: '#ef4444',
+    },
+    marcadorPunto: {
+        width: 18,
+        height: 18,
+        borderRadius: 9,
+        backgroundColor: '#ef4444',
+        borderWidth: 3,
+        borderColor: '#ffffff',
+    },
     bannerSinConexion: {
         backgroundColor: 'rgba(127, 29, 29, 0.95)',
         paddingVertical: 6,
@@ -481,6 +581,7 @@ const styles = StyleSheet.create({
     },
     bannerSinConexionText: {
         color: '#fecaca',
+        textAlign: 'center',
         fontWeight: 'bold',
         fontSize: 13,
     },

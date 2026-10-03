@@ -28,19 +28,19 @@ const TIPO_SERVIDOR_A_ALERTA: Record<string, TipoAlerta> = {
 };
 
 // Intensidad del sonido y patron de repeticion por tipo de alerta, segun el
-// diseño acordado: encendido = 3 pines una vez, apagado/desbloqueo = normal
+// diseño acordado: encendido = 5 pines una vez, apagado/desbloqueo = normal
 // una vez, velocidad/ruta = fuerte hasta que se descarte, recordatorio del
 // motor = leve una vez (se repite solo porque el servidor lo vuelve a
 // emitir cada 10 min, no porque el cliente lo loopee).
 type Intensidad = 'leve' | 'normal' | 'fuerte';
-type Patron = 'una-vez' | 'triple' | 'loop';
+type Patron = 'una-vez' | 'cinco' | 'loop';
 
 const CONFIG_SONIDO: Record<TipoAlerta, { intensidad: Intensidad; patron: Patron }> = {
   ruta: { intensidad: 'fuerte', patron: 'loop' },
   velocidad: { intensidad: 'fuerte', patron: 'loop' },
   aceite: { intensidad: 'normal', patron: 'una-vez' },
   seguro: { intensidad: 'leve', patron: 'una-vez' },
-  ignicion: { intensidad: 'normal', patron: 'triple' },
+  ignicion: { intensidad: 'normal', patron: 'cinco' },
   apagado: { intensidad: 'normal', patron: 'una-vez' },
   desbloqueo: { intensidad: 'normal', patron: 'una-vez' },
   recordatorio_motor: { intensidad: 'leve', patron: 'una-vez' },
@@ -88,7 +88,7 @@ export const AlertProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   // Reproduce el sonido correspondiente al tipo de alerta, usando la
-  // intensidad (leve/normal/fuerte) y el patrón (una-vez/triple/loop)
+  // intensidad (leve/normal/fuerte) y el patrón (una-vez/cinco/loop)
   // definidos en CONFIG_SONIDO.
   async function playAlarmSound(type: TipoAlerta) {
     const { intensidad, patron } = CONFIG_SONIDO[type];
@@ -121,9 +121,9 @@ export const AlertProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return;
       }
 
-      // Patrones cortos (una-vez / triple): siempre con el beep generado,
+      // Patrones cortos (una-vez / cinco): siempre con el beep generado,
       // para controlar con precisión cuántas veces suena.
-      const repeticiones = patron === 'triple' ? 3 : 1;
+      const repeticiones = patron === 'cinco' ? 5 : 1;
       await beepService.playRepeatingBeep(frecuencia, 500, repeticiones, 250, volumen);
     } catch (error) {
       console.log("❌ Error general con sonido:", error);

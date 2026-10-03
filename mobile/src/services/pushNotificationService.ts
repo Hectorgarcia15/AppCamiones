@@ -41,16 +41,18 @@ async function obtenerExpoPushToken(): Promise<string | null> {
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
     });
-    // Canal del "pin pin pin" para motor encendido/apagado y exceso de
-    // velocidad (server.js: TIPOS_CON_SONIDO_PIN). En Android el sonido de un
-    // canal no se puede cambiar despues de creado: si se cambia el archivo,
-    // hay que usar un id de canal nuevo aqui y en el servidor.
-    await Notifications.setNotificationChannelAsync('alertas-pin', {
+    // Canal del "pin" x5 para motor encendido/apagado y exceso de velocidad
+    // (server.js: TIPOS_CON_SONIDO_PIN). En Android el sonido de un canal no
+    // se puede cambiar despues de creado: si se cambia el archivo, hay que
+    // usar un id de canal nuevo aqui y en el servidor.
+    await Notifications.setNotificationChannelAsync('alertas-pin5', {
       name: 'Motor y velocidad',
       importance: Notifications.AndroidImportance.MAX,
-      sound: 'pinpin.wav',
-      vibrationPattern: [0, 150, 120, 150, 120, 150],
+      sound: 'pinpin5.wav',
+      vibrationPattern: [0, 150, 120, 150, 120, 150, 120, 150, 120, 150],
     });
+    // Canal anterior de 3 pines: ya no se usa, se quita de los ajustes
+    await Notifications.deleteNotificationChannelAsync('alertas-pin');
   }
 
   const projectId = Constants.expoConfig?.extra?.eas?.projectId;

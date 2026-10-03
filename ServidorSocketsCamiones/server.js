@@ -312,13 +312,13 @@ function tituloPorTipoAlerta(tipo) {
     }
 }
 
-// Alertas que suenan con el "pin pin pin" propio. En Android el sonido va
-// atado al canal: 'alertas-pin' lo crea la app (pushNotificationService.ts)
-// con el archivo pinpin.wav incluido en el APK. Una app vieja sin ese canal
-// muestra la notificacion igual, por el canal por defecto.
+// Alertas que suenan con el "pin" x5 propio. En Android el sonido va atado al
+// canal: 'alertas-pin5' lo crea la app (pushNotificationService.ts) con el
+// archivo pinpin5.wav incluido en el APK. Una app vieja sin ese canal muestra
+// la notificacion igual, por el canal por defecto.
 const TIPOS_CON_SONIDO_PIN = new Set(['encendido', 'apagado', 'velocidad']);
-const CANAL_PUSH_PIN = 'alertas-pin';
-const SONIDO_PUSH_PIN = 'pinpin.wav';
+const CANAL_PUSH_PIN = 'alertas-pin5';
+const SONIDO_PUSH_PIN = 'pinpin5.wav';
 
 // Manda un push (Expo Push API) a todos los dispositivos registrados de un dueño.
 async function enviarPush(ownerId, titulo, mensaje, datosExtra) {
@@ -563,18 +563,18 @@ const excesoVelocidadActivo = new Set();
 
 // ==================== MOTOR ENCENDIDO/APAGADO POR VELOCIDAD ====================
 // Aproximacion mientras el cable de ignicion no este conectado:
-// - Encendido: 2 reportes seguidos a >= 10 km/h separados por >= 20 s (un
-//   pico suelto por error del GPS con el camion parado no cuenta).
-// - Apagado: < 3 km/h sin interrupcion durante 8 min (un semaforo o un tapon
-//   corto no cuenta). Se mide con un timer en el servidor, asi se apaga aunque
-//   el tracker deje de reportar al estacionarse. Solo un reporte >= 10 km/h
-//   cancela el conteo, para que el ruido del GPS parado no lo reinicie.
-const VELOCIDAD_MOVIMIENTO = 10;
-const SEGUNDOS_MIN_ENTRE_REPORTES_ENCENDIDO = 20;
+// - Encendido: el primer reporte a >= 3 km/h, o sea en cuanto empieza a
+//   moverse (inmediato; el dueño acepto que un salto del GPS con el camion
+//   parado pueda dar un falso encendido). No se baja de 3 porque con el
+//   vehiculo quieto el GPS suele reportar 0-2 km/h de ruido de posicion.
+// - Apagado: < 3 km/h sin interrupcion durante 3 min (un semaforo corto no
+//   cuenta). Se mide con un timer en el servidor, asi se apaga aunque
+//   el tracker deje de reportar al estacionarse. Cualquier reporte de
+//   movimiento (>= 3 km/h) cancela el conteo.
+const VELOCIDAD_MOVIMIENTO = 3;
 const VELOCIDAD_DETENIDO = 3;
-const MS_DETENIDO_PARA_APAGADO = 8 * 60 * 1000;
+const MS_DETENIDO_PARA_APAGADO = 3 * 60 * 1000;
 
-const primerReporteEnMovimiento = new Map(); // imei -> timestamp ms
 const timersApagadoPorVelocidad = new Map(); // imei -> timeoutId
 
 async function cambiarEstadoMotor(ownerId, imei, ficha, encendido) {
@@ -617,20 +617,12 @@ function programarApagadoPorVelocidad(ownerId, imei, ficha, ms = MS_DETENIDO_PAR
 async function evaluarMotorPorVelocidad(ownerId, imei, ficha, velocidad, motorEncendido) {
     if (velocidad >= VELOCIDAD_MOVIMIENTO) {
         cancelarApagadoPorVelocidad(imei);
-        if (motorEncendido) return;
-        const ahora = Date.now();
-        const primero = primerReporteEnMovimiento.get(imei);
-        if (primero === undefined) {
-            primerReporteEnMovimiento.set(imei, ahora);
-        } else if (ahora - primero >= SEGUNDOS_MIN_ENTRE_REPORTES_ENCENDIDO * 1000) {
-            primerReporteEnMovimiento.delete(imei);
+        if (!motorEncendido) {
             await cambiarEstadoMotor(ownerId, imei, ficha, true);
         }
         return;
     }
 
-    // Un reporte por debajo de 10 rompe la racha de "en movimiento"
-    primerReporteEnMovimiento.delete(imei);
     if (velocidad < VELOCIDAD_DETENIDO && motorEncendido) {
         programarApagadoPorVelocidad(ownerId, imei, ficha);
     }

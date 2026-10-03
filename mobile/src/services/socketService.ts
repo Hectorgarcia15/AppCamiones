@@ -16,7 +16,9 @@ import { API_BASE_URL } from '../context/AuthContext';
 // conectado: hay conexion viva con el servidor
 // reconectando: se perdio la conexion y socket.io esta reintentando solo
 // desconectado: no hay socket (sin sesion o despues de logout)
-export type EstadoConexion = 'conectado' | 'reconectando' | 'desconectado';
+// token_rechazado: hay conexion pero el servidor no acepto el codigo del dueño,
+// asi que no llegan ubicaciones (el mapa se veria congelado sin avisar)
+export type EstadoConexion = 'conectado' | 'reconectando' | 'desconectado' | 'token_rechazado';
 
 class SocketService {
   private socket: Socket | null = null;
@@ -93,6 +95,7 @@ class SocketService {
       this.socket.on('autenticado', (respuesta: { ok: boolean }) => {
         this.autenticado = respuesta.ok;
         console.log(respuesta.ok ? '🔑 Autenticado en el servidor' : '❌ Token rechazado');
+        this.cambiarEstado(respuesta.ok ? 'conectado' : 'token_rechazado');
       });
 
       // Al volver a primer plano el socket pudo haber muerto en segundo plano
