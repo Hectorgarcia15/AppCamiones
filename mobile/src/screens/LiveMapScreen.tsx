@@ -1,6 +1,6 @@
-﻿import React, { useEffect, useState, useCallback, useRef } from 'react';
+﻿import React, { useEffect, useState, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, Alert, AppState, Animated, Easing } from 'react-native';
-import MapView, { MarkerAnimated, AnimatedRegion, Polyline, Camera } from 'react-native-maps';
+import MapView, { Marker, Polyline, Camera, LatLng } from 'react-native-maps';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { useAuth, API_BASE_URL } from '../context/AuthContext';
 import { socketService, useEstadoConexion } from '../services/socketService';
@@ -76,9 +76,169 @@ function HaloMovimiento() {
     );
 }
 
-// Duracion del deslizamiento del marcador y la camara hacia cada ubicacion
-// nueva, en vez de saltar de golpe
-const MS_ANIMACION_MOVIMIENTO = 1000;
+// Movimiento continuo del vehiculo (como Uber): cada tramo dura lo que se
+// espera que tarde el proximo reporte, asi el icono sigue andando hasta que
+// entra. Se estima por lo alto (el mayor de los ultimos intervalos + holgura)
+// porque pasarse es inofensivo (el reporte llega antes y el tramo nuevo sale
+// de donde va el icono, sin salto) y quedarse corto lo deja quieto esperando.
+// Los trackers no reportan a ritmo fijo (ej. mandan uno extra al doblar), por
+// eso no basta con el ultimo intervalo. A cambio, el icono va unos segundos
+// detras de la posicion real
+const MS_PRIMERA_ANIMACION = 1000;   // primer reporte, aun sin intervalo medido
+const MS_MIN_ANIMACION = 1000;       // piso: una rafaga de reportes juntos no deja tramos de milisegundos
+const MS_MAX_ANIMACION = 15000;      // tope: si el tracker tarda mas, se queda quieto el resto
+const INTERVALOS_RECORDADOS = 3;
+const HOLGURA_DURACION = 1.3;
+// Mas lejos que esto (ej. al volver de una desconexion) se salta directo, en
+// vez de "manejar" en linea recta por encima de manzanas enteras
+const METROS_SALTO_DIRECTO = 1000;
+// Cada cuanto se recalcula la posicion intermedia (~30 cuadros por segundo)
+const MS_PASO_ANIMACION = 33;
+
+type MovimientoVehiculo = {
+    // duracionMs 0 = salto directo
+    moverA: (destino: LatLng, duracionMs: number) => void;
+};
+
+// Recorrido en curso: el icono avanza a velocidad constante por 'puntos'
+// (su posicion al empezar + los puntos GPS que le faltan), en 'duracion' ms
+type Recorrido = {
+    puntos: LatLng[];
+    acumulado: number[];   // metros desde puntos[0] hasta cada punto
+    inicio: number;
+    duracion: number;
+    pasados: number;       // indice del ultimo punto por el que ya paso (ya en la estela)
+};
+
+function armarRecorrido(puntos: LatLng[], duracion: number): Recorrido {
+    const acumulado = [0];
+    for (let i = 1; i < puntos.length; i++) {
+        const a = puntos[i - 1], b = puntos[i];
+        acumulado.push(acumulado[i - 1] + distanciaMetros(a.latitude, a.longitude, b.latitude, b.longitude));
+    }
+    return { puntos, acumulado, inicio: Date.now(), duracion, pasados: 0 };
+}
+
+// Icono del vehiculo + halo, moviendose de forma continua entre reportes. La
+// posicion intermedia se interpola aqui (lineal, a velocidad constante) en vez
+// de usar animateMarkerToCoordinate: ese metodo de Android no se puede
+// cancelar (un reporte que llega antes de terminar deja dos animaciones
+// peleando por el marcador, y el salto directo no frenaria la anterior) y
+// acelera/frena en cada punto. Si llega un reporte antes de terminar, el
+// recorrido sigue desde donde va el icono y pasa por los puntos que le
+// faltaban antes del nuevo: nunca salta ni corta esquinas. El halo usa la
+// misma posicion, asi nunca se despega del icono. Solo hay timers mientras hay
+// un recorrido en curso
+const VehiculoEnMapa = forwardRef<MovimientoVehiculo, {
+    inicial: LatLng;
+    titulo: string;
+    descripcion: string;
+    rotacion: number;
+    enMovimiento: boolean;
+    // Se llama al pasar por cada punto GPS, para la estela
+    onLlegada: (punto: LatLng) => void;
+}>(function VehiculoEnMapa({ inicial, titulo, descripcion, rotacion, enMovimiento, onLlegada }, ref) {
+    const [posicion, setPosicion] = useState<LatLng>(inicial);
+    const posicionRef = useRef<LatLng>(inicial);
+    const recorrido = useRef<Recorrido | null>(null);
+    const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const onLlegadaRef = useRef(onLlegada);
+    onLlegadaRef.current = onLlegada;
+
+    const aplicar = (punto: LatLng) => {
+        posicionRef.current = punto;
+        setPosicion(punto);
+    };
+    const cancelarTimer = () => {
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = null;
+    };
+
+    useImperativeHandle(ref, () => ({
+        moverA(destino, duracionMs) {
+            const actual = recorrido.current;
+            // Estacionado el tracker repite la misma coordenada: no se arranca un
+            // recorrido "al mismo punto" (timers corriendo hasta 15 s para nada)
+            const haciaDonde = actual ? actual.puntos[actual.puntos.length - 1] : posicionRef.current;
+            if (haciaDonde.latitude === destino.latitude && haciaDonde.longitude === destino.longitude) {
+                // Ya esta ahi: igual cuenta para la estela (la duplicada se descarta)
+                if (!actual) onLlegadaRef.current(destino);
+                return;
+            }
+            cancelarTimer();
+            recorrido.current = null;
+
+            if (duracionMs <= 0) {
+                // Salto directo: los puntos que faltaban no se recorren (la estela
+                // la reinicia la pantalla)
+                aplicar(destino);
+                onLlegadaRef.current(destino);
+                return;
+            }
+            // Llego un reporte antes de terminar: el recorrido nuevo sale de donde
+            // esta el icono ahora y pasa por los puntos que le faltaban
+            const pendientes = actual ? actual.puntos.slice(actual.pasados + 1) : [];
+            recorrido.current = armarRecorrido([posicionRef.current, ...pendientes, destino], duracionMs);
+
+            const paso = () => {
+                const r = recorrido.current;
+                if (!r) return;
+                const f = Math.min(1, (Date.now() - r.inicio) / r.duracion);
+                const total = r.acumulado[r.acumulado.length - 1];
+                const metros = total * f;
+                // Puntos GPS por los que ya paso: a la estela, en orden
+                while (r.pasados < r.puntos.length - 1 && r.acumulado[r.pasados + 1] <= metros) {
+                    r.pasados++;
+                    onLlegadaRef.current(r.puntos[r.pasados]);
+                }
+                if (f >= 1 || total === 0) {
+                    while (r.pasados < r.puntos.length - 1) {
+                        r.pasados++;
+                        onLlegadaRef.current(r.puntos[r.pasados]);
+                    }
+                    aplicar(r.puntos[r.puntos.length - 1]);
+                    recorrido.current = null;
+                    timer.current = null;
+                    return;
+                }
+                const a = r.puntos[r.pasados], b = r.puntos[r.pasados + 1];
+                const largo = r.acumulado[r.pasados + 1] - r.acumulado[r.pasados];
+                const g = largo > 0 ? (metros - r.acumulado[r.pasados]) / largo : 1;
+                aplicar({
+                    latitude: a.latitude + (b.latitude - a.latitude) * g,
+                    longitude: a.longitude + (b.longitude - a.longitude) * g,
+                });
+                timer.current = setTimeout(paso, MS_PASO_ANIMACION);
+            };
+            paso();
+        },
+    }), []);
+
+    useEffect(() => cancelarTimer, []);
+
+    return (
+        <>
+            {enMovimiento && (
+                <Marker coordinate={posicion} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges zIndex={1}>
+                    <HaloMovimiento />
+                </Marker>
+            )}
+            <Marker
+                coordinate={posicion}
+                title={titulo}
+                description={descripcion}
+                image={ICONO_VEHICULO}
+                anchor={{ x: 0.5, y: 0.5 }}
+                // flat: el icono queda pegado al mapa y rotation se mide desde el
+                // norte, asi apunta hacia donde va (y hacia arriba, porque la
+                // camara gira con el mismo rumbo). Sin rumbo aun, mira al norte
+                flat
+                rotation={rotacion}
+                zIndex={2}
+            />
+        </>
+    );
+});
 
 // Cada cuanto se redibuja el texto de "Última señal" para que avance solo
 const MS_REFRESCO_ULTIMA_SENAL = 10000;
@@ -100,13 +260,13 @@ export default function LiveMapScreen() {
         velocidad: camionParam?.velocidad || 0,
     });
 
-    // Posicion animada del marcador: se mueve con timing hacia cada punto nuevo
-    const [posicionMarcador] = useState(() => new AnimatedRegion({
-        latitude: camion.latitud,
-        longitude: camion.longitud,
-        latitudeDelta: 0,
-        longitudeDelta: 0,
-    }));
+    // Movimiento del icono (ver VehiculoEnMapa) y datos para calcular cada tramo:
+    // a donde va el icono ahora y cuando llego el ultimo reporte
+    const vehiculoRef = useRef<MovimientoVehiculo>(null);
+    const [posicionInicial] = useState<LatLng>(() => ({ latitude: camion.latitud, longitude: camion.longitud }));
+    const destinoActual = useRef<LatLng>(posicionInicial);
+    const msUltimoReporte = useRef<number | null>(null);
+    const ultimosIntervalos = useRef<number[]>([]);
 
     // Si el camion ya tiene una ubicacion guardada la mostramos de una vez, en vez
     // de quedarnos en "Esperando señal GPS..." hasta el proximo reporte en vivo
@@ -148,20 +308,32 @@ export default function LiveMapScreen() {
             const latitud = Number(datos.latitud);
             const longitud = Number(datos.longitud);
             setCamion({ latitud, longitud, velocidad: datos.velocidad || 0 });
-            setEstela((anterior) => {
-                const ultimo = anterior[anterior.length - 1];
-                // Con el camion parado el GPS repite la misma coordenada: no la duplicamos
-                if (ultimo && ultimo.latitude === latitud && ultimo.longitude === longitud) {
-                    return anterior;
-                }
-                const nueva = [...anterior, { latitude: latitud, longitude: longitud }];
-                return nueva.length > MAX_PUNTOS_ESTELA ? nueva.slice(-MAX_PUNTOS_ESTELA) : nueva;
-            });
-            // timing() de AnimatedRegion solo anima las claves que recibe; su tipo
-            // pide una Region completa y toValue, que aqui no aplican
-            posicionMarcador.timing({
-                latitude: latitud, longitude: longitud, duration: MS_ANIMACION_MOVIMIENTO, useNativeDriver: false,
-            } as any).start();
+
+            const ahora = Date.now();
+            // Reportes que llegan casi juntos (ej. los acumulados mientras la app
+            // estaba en segundo plano) no dicen nada del ritmo del tracker: no se
+            // cuentan, o el recorrido atrasado se haria de un tiron en 1 s
+            const intervaloNuevo = msUltimoReporte.current === null ? null : ahora - msUltimoReporte.current;
+            if (intervaloNuevo !== null && intervaloNuevo >= MS_MIN_ANIMACION) {
+                ultimosIntervalos.current = [...ultimosIntervalos.current, intervaloNuevo].slice(-INTERVALOS_RECORDADOS);
+            }
+            msUltimoReporte.current = ahora;
+            const intervalos = ultimosIntervalos.current;
+            const desde = destinoActual.current;
+            const salto = distanciaMetros(desde.latitude, desde.longitude, latitud, longitud) > METROS_SALTO_DIRECTO;
+            const duracion = salto
+                ? 0
+                : intervalos.length === 0
+                    ? MS_PRIMERA_ANIMACION
+                    : Math.round(Math.min(MS_MAX_ANIMACION, Math.max(MS_MIN_ANIMACION, Math.max(...intervalos) * HOLGURA_DURACION)));
+            destinoActual.current = { latitude: latitud, longitude: longitud };
+            if (salto) {
+                // La linea entre los dos puntos seria falsa: la estela empieza de nuevo
+                setEstela([]);
+                puntoBaseRumbo.current = null;
+            }
+            vehiculoRef.current?.moverA({ latitude: latitud, longitude: longitud }, duracion);
+
             const base = puntoBaseRumbo.current;
             if (!base) {
                 puntoBaseRumbo.current = { latitud, longitud };
@@ -176,11 +348,29 @@ export default function LiveMapScreen() {
             if (ultimoRumbo.current !== null) {
                 camara.heading = ultimoRumbo.current;
             }
-            mapRef.current?.animateCamera(camara, { duration: MS_ANIMACION_MOVIMIENTO });
+            if (duracion > 0) {
+                mapRef.current?.animateCamera(camara, { duration: duracion });
+            } else {
+                mapRef.current?.setCamera(camara);
+            }
             setTieneSenal(true);
             setUltimaActualizacion(datos.ultima_actualizacion || new Date().toISOString());
         }
-    }, [nombreCamion, posicionMarcador]);
+    }, [nombreCamion]);
+
+    // La estela se alarga cuando el icono llega a cada punto, no cuando llega
+    // el reporte: si no, la linea iria por delante del carro
+    const agregarALaEstela = useCallback((punto: LatLng) => {
+        setEstela((anterior) => {
+            const ultimo = anterior[anterior.length - 1];
+            // Con el camion parado el GPS repite la misma coordenada: no la duplicamos
+            if (ultimo && ultimo.latitude === punto.latitude && ultimo.longitude === punto.longitude) {
+                return anterior;
+            }
+            const nueva = [...anterior, punto];
+            return nueva.length > MAX_PUNTOS_ESTELA ? nueva.slice(-MAX_PUNTOS_ESTELA) : nueva;
+        });
+    }, []);
 
     // Pide al servidor la ultima ubicacion guardada. Se usa al reconectar el
     // socket y al volver a primer plano, porque los reportes que llegaron
@@ -367,29 +557,14 @@ export default function LiveMapScreen() {
                         strokeWidth={4}
                     />
                 )}
-                {enMovimiento && (
-                    <MarkerAnimated
-                        coordinate={posicionMarcador as any}
-                        anchor={{ x: 0.5, y: 0.5 }}
-                        tracksViewChanges
-                        zIndex={1}
-                    >
-                        <HaloMovimiento />
-                    </MarkerAnimated>
-                )}
-                <MarkerAnimated
-                    // AnimatedRegion no encaja en el tipo LatLng de la prop, pero es lo que acepta
-                    coordinate={posicionMarcador as any}
-                    title={nombreCamion}
-                    description={direccion ? `${direccion} · ${camion.velocidad} km/h` : `Velocidad: ${camion.velocidad} km/h`}
-                    image={ICONO_VEHICULO}
-                    anchor={{ x: 0.5, y: 0.5 }}
-                    // flat: el icono queda pegado al mapa y rotation se mide desde el
-                    // norte, asi apunta hacia donde va (y hacia arriba, porque la
-                    // camara gira con el mismo rumbo). Sin rumbo aun, mira al norte
-                    flat
-                    rotation={rumboMarcador ?? 0}
-                    zIndex={2}
+                <VehiculoEnMapa
+                    ref={vehiculoRef}
+                    inicial={posicionInicial}
+                    titulo={nombreCamion}
+                    descripcion={direccion ? `${direccion} · ${camion.velocidad} km/h` : `Velocidad: ${camion.velocidad} km/h`}
+                    rotacion={rumboMarcador ?? 0}
+                    enMovimiento={enMovimiento}
+                    onLlegada={agregarALaEstela}
                 />
             </MapView>
 
