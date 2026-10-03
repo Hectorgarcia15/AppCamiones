@@ -36,22 +36,22 @@ function rumboEntre(lat1: number, lon1: number, lat2: number, lon2: number): num
     return (Math.atan2(y, x) / rad + 360) % 360;
 }
 
-// Duracion de un ciclo del pulso del marcador mientras el camion se mueve
-const MS_CICLO_PULSO = 1400;
-// Tiempo extra que el marcador sigue redibujandose al detenerse, para que en
-// Android quede capturado sin el halo (y no congelado a mitad de un pulso)
-const MS_CAPTURA_FINAL_MARCADOR = 600;
+// Icono del vehiculo visto desde arriba, con el frente hacia el norte. Va como
+// imagen fija (prop image) y no como vista hija: en Android las vistas hijas
+// de un marcador se dibujan "fotografiandolas", y si la foto se toma antes de
+// que el mapa termine de cargar el marcador queda invisible
+const ICONO_VEHICULO = require('../../../assets/vehiculo_arriba.png');
 
-// Punto rojo propio del vehiculo. Mientras se mueve, un halo crece y se
-// desvanece en bucle; detenido queda quieto y la animacion no corre
-function MarcadorVehiculo({ enMovimiento }: { enMovimiento: boolean }) {
+// Duracion de un ciclo del pulso del halo mientras el camion se mueve
+const MS_CICLO_PULSO = 1400;
+
+// Halo que crece y se desvanece en bucle. Va en un marcador aparte que solo
+// existe mientras el vehiculo se mueve: detenido se quita del mapa y no gasta
+// bateria, y si algun dia no se dibujara, el icono del vehiculo no se afecta
+function HaloMovimiento() {
     const [progreso] = useState(() => new Animated.Value(0));
 
     useEffect(() => {
-        if (!enMovimiento) {
-            progreso.setValue(0);
-            return;
-        }
         // useNativeDriver en false: en Android el marcador se dibuja como imagen
         // y solo captura los cambios que pasan por JS
         const bucle = Animated.loop(
@@ -59,22 +59,19 @@ function MarcadorVehiculo({ enMovimiento }: { enMovimiento: boolean }) {
         );
         bucle.start();
         return () => bucle.stop();
-    }, [enMovimiento, progreso]);
+    }, [progreso]);
 
     return (
-        <View style={styles.marcador}>
-            {enMovimiento && (
-                <Animated.View
-                    style={[
-                        styles.marcadorHalo,
-                        {
-                            opacity: progreso.interpolate({ inputRange: [0, 1], outputRange: [0.6, 0] }),
-                            transform: [{ scale: progreso.interpolate({ inputRange: [0, 1], outputRange: [1, 2.6] }) }],
-                        },
-                    ]}
-                />
-            )}
-            <View style={styles.marcadorPunto} />
+        <View style={styles.halo}>
+            <Animated.View
+                style={[
+                    styles.haloCirculo,
+                    {
+                        opacity: progreso.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0] }),
+                        transform: [{ scale: progreso.interpolate({ inputRange: [0, 1], outputRange: [1, 2.4] }) }],
+                    },
+                ]}
+            />
         </View>
     );
 }
@@ -134,6 +131,8 @@ export default function LiveMapScreen() {
     // camion avanzo METROS_MIN_PARA_RUMBO. Arranca con la primera ubicacion en
     // vivo, no con la guardada, que puede ser vieja
     const puntoBaseRumbo = useRef<{ latitud: number; longitud: number } | null>(null);
+    // Mismo rumbo, como estado, para girar el icono del vehiculo
+    const [rumboMarcador, setRumboMarcador] = useState<number | null>(null);
     const mapRef = useRef<MapView>(null);
     const ultimaConsultaDireccion = useRef<{ latitud: number; longitud: number; tiempo: number } | null>(null);
     // Copia de ultimaActualizacion legible desde callbacks sin re-crearlos
@@ -169,6 +168,7 @@ export default function LiveMapScreen() {
             } else if (distanciaMetros(base.latitud, base.longitud, latitud, longitud) >= METROS_MIN_PARA_RUMBO) {
                 ultimoRumbo.current = rumboEntre(base.latitud, base.longitud, latitud, longitud);
                 puntoBaseRumbo.current = { latitud, longitud };
+                setRumboMarcador(ultimoRumbo.current);
             }
             // Sigue al camion cambiando el centro y girando el mapa segun su rumbo,
             // sin tocar el zoom del usuario
@@ -274,18 +274,6 @@ export default function LiveMapScreen() {
     const camionDetenido = camion.velocidad === 0;
     const enMovimiento = camion.velocidad > 0;
 
-    // En Android el marcador propio solo se redibuja con tracksViewChanges: se
-    // deja activo mientras se mueve (para el pulso) y un momento al detenerse
-    const [redibujarMarcador, setRedibujarMarcador] = useState(true);
-    useEffect(() => {
-        if (enMovimiento) {
-            setRedibujarMarcador(true);
-            return;
-        }
-        const timeoutId = setTimeout(() => setRedibujarMarcador(false), MS_CAPTURA_FINAL_MARCADOR);
-        return () => clearTimeout(timeoutId);
-    }, [enMovimiento]);
-
     const confirmarApagado = () => {
         Alert.alert(
             'Apagar el Vehículo',
@@ -379,16 +367,30 @@ export default function LiveMapScreen() {
                         strokeWidth={4}
                     />
                 )}
+                {enMovimiento && (
+                    <MarkerAnimated
+                        coordinate={posicionMarcador as any}
+                        anchor={{ x: 0.5, y: 0.5 }}
+                        tracksViewChanges
+                        zIndex={1}
+                    >
+                        <HaloMovimiento />
+                    </MarkerAnimated>
+                )}
                 <MarkerAnimated
                     // AnimatedRegion no encaja en el tipo LatLng de la prop, pero es lo que acepta
                     coordinate={posicionMarcador as any}
                     title={nombreCamion}
                     description={direccion ? `${direccion} · ${camion.velocidad} km/h` : `Velocidad: ${camion.velocidad} km/h`}
+                    image={ICONO_VEHICULO}
                     anchor={{ x: 0.5, y: 0.5 }}
-                    tracksViewChanges={redibujarMarcador}
-                >
-                    <MarcadorVehiculo enMovimiento={enMovimiento} />
-                </MarkerAnimated>
+                    // flat: el icono queda pegado al mapa y rotation se mide desde el
+                    // norte, asi apunta hacia donde va (y hacia arriba, porque la
+                    // camara gira con el mismo rumbo). Sin rumbo aun, mira al norte
+                    flat
+                    rotation={rumboMarcador ?? 0}
+                    zIndex={2}
+                />
             </MapView>
 
             <View style={styles.navRow}>
@@ -548,26 +550,17 @@ const styles = StyleSheet.create({
         left: 20,
         right: 20,
     },
-    marcador: {
-        width: 48,
-        height: 48,
+    halo: {
+        width: 100,
+        height: 100,
         alignItems: 'center',
         justifyContent: 'center',
     },
-    marcadorHalo: {
-        position: 'absolute',
-        width: 18,
-        height: 18,
-        borderRadius: 9,
+    haloCirculo: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
         backgroundColor: '#ef4444',
-    },
-    marcadorPunto: {
-        width: 18,
-        height: 18,
-        borderRadius: 9,
-        backgroundColor: '#ef4444',
-        borderWidth: 3,
-        borderColor: '#ffffff',
     },
     bannerSinConexion: {
         backgroundColor: 'rgba(127, 29, 29, 0.95)',
